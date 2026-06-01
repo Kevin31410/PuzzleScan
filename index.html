@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PuzzleScan - Ludothèque Associative</title>
+    <style>
+        :root { --bg-main: #1e272e; --bg-card: #2d3436; --bg-input: #353b48; --primary: #0fb9b1; --text-light: #ffffff; --text-dark: #000000; --danger: #eb3b5a; --success: #20bf6b; --warning: #f39c12; --border: #485460; }
+        body { font-family: Arial, sans-serif; background-color: var(--bg-main); color: var(--text-light); margin: 0; padding: 0; }
+        nav { background-color: var(--bg-card); display: flex; overflow-x: auto; border-bottom: 2px solid var(--border); }
+        nav button { background: none; border: none; color: var(--text-light); padding: 15px 20px; font-size: 16px; cursor: pointer; white-space: nowrap; font-weight: bold; }
+        nav button.active { background-color: var(--primary); color: var(--text-dark); }
+        .container { padding: 20px; max-width: 1200px; margin: 0 auto; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .scan-layout { display: flex; flex-wrap: wrap; gap: 20px; }
+        .panel { background-color: var(--bg-card); padding: 20px; border-radius: 10px; flex: 1; min-width: 300px; border: 1px solid var(--border); }
+        input, textarea { width: 100%; padding: 10px; margin: 10px 0; background-color: var(--bg-input); border: 1px solid var(--border); color: var(--text-light); border-radius: 5px; box-sizing: border-box; }
+        button.btn { padding: 10px 15px; border: none; border-radius: 5px; font-weight: bold; cursor: pointer; margin: 5px; color: var(--text-light); background-color: var(--border); }
+        button.btn-primary { background-color: var(--primary); color: var(--text-dark); }
+        button.btn-success { background-color: var(--success); color: var(--text-dark); }
+        button.btn-danger { background-color: var(--danger); color: var(--text-light); }
+        button.btn-warning { background-color: var(--warning); color: var(--text-dark); }
+        #reader { width: 100%; max-width: 400px; margin: 0 auto; border: 2px solid var(--primary); border-radius: 10px; overflow: hidden; background: black; }
+        .table-responsive { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
+        th { background-color: var(--bg-input); }
+        tr:hover { background-color: var(--border); }
+        .cover-preview { width: 80px; height: 80px; object-fit: cover; border-radius: 5px; }
+        .loan-text { color: var(--warning); font-weight: bold; }
+        .status-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-weight: bold; background: var(--warning); color: var(--text-dark); margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <nav>
+        <button id="nav-scan" class="active">📸 Scanner</button>
+        <button id="nav-lib">📚 Ludothèque</button>
+        <button id="nav-loans">🤝 Prêts</button>
+    </nav>
+
+    <div class="container">
+        <div id="tab-scan" class="tab-content active">
+            <h1 style="text-align: center; color: var(--primary);">🧩 PuzzleScan</h1>
+            <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
+                <input type="text" id="manualSearch" placeholder="Code-barres manuel..." style="flex: 1; min-width: 200px;">
+                <button id="btn-search" class="btn btn-primary">🔍 Chercher</button>
+            </div>
+            <div class="scan-layout">
+                <div class="panel" style="text-align: center;">
+                    <h3>Caméra (Android / PC)</h3>
+                    <div id="reader"></div>
+                </div>
+                <div class="panel">
+                    <div class="status-badge" id="scanStatus">PRÊT À SCANNER</div>
+                    <div id="resultCard" style="display: none;">
+                        <img id="puzzleImage" class="cover-preview" src="" style="width: 150px; height: 150px; margin: 0 auto; display: block;">
+                        <input type="hidden" id="puzzleBarcode"><input type="hidden" id="puzzleImgUrl">
+                        <label>Marque</label><input type="text" id="puzzleBrand">
+                        <label>Titre</label><input type="text" id="puzzleTitle">
+                        <div style="display: flex; gap: 10px;">
+                            <div style="flex:1;"><label>Pièces</label><input type="text" id="puzzlePieces"></div>
+                            <div style="flex:1;"><label>Prix</label><input type="text" id="puzzlePrice"></div>
+                        </div>
+                        <label>Notes / État</label><textarea id="puzzleNotes" rows="2"></textarea>
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button id="btn-save" class="btn btn-success" style="flex: 1;">✅ SAUVEGARDER</button>
+                            <button id="btn-cancel" class="btn btn-danger" style="flex: 1;">❌ ANNULER</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="tab-lib" class="tab-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                <h2>Ma Ludothèque</h2><h3 id="totalValue">Chargement...</h3>
+            </div>
+            <button id="btn-refresh-lib" class="btn">🔄 Rafraîchir</button>
+            <div class="table-responsive">
+                <table id="libTable">
+                    <thead><tr><th>Image</th><th>Code</th><th>Marque / Titre</th><th>Pièces</th><th>État/Prêt</th><th>Actions</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-loans" class="tab-content">
+            <h2>Gestion des Prêts</h2>
+            <button id="btn-refresh-loans" class="btn">🔄 Rafraîchir</button>
+            <div class="table-responsive">
+                <table id="loansTable">
+                    <thead><tr><th>Puzzle</th><th>Emprunteur</th><th>Date</th><th>Action</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script>
+        // 🔴🔴🔴 COLIEZ L'URL DE VOTRE GOOGLE APPS SCRIPT ICI 🔴🔴🔴
+        const GAS_URL = "VOTRE_URL_GOOGLE_ICI";
+        let dbPuzzles = [];
+
+        // Navigation
+        document.getElementById('nav-scan').addEventListener('click', function() { switchTab('tab-scan', this); });
+        document.getElementById('nav-lib').addEventListener('click', function() { switchTab('tab-lib', this); });
+        document.getElementById('nav-loans').addEventListener('click', function() { switchTab('tab-loans', this); });
+        document.getElementById('btn-search').addEventListener('click', searchAPI);
+        document.getElementById('btn-save').addEventListener('click', savePuzzle);
+        document.getElementById('btn-cancel').addEventListener('click', resetScanner);
+        document.getElementById('btn-refresh-lib').addEventListener('click', loadPuzzlesFromDrive);
+        document.getElementById('btn-refresh-loans').addEventListener('click', loadPuzzlesFromDrive);
+
+        document.addEventListener('click', function(e) {
+            if (e.target.classList.contains('action-preter')) preterPuzzle(e.target.getAttribute('data-id'));
+            else if (e.target.classList.contains('action-delete')) deletePuzzle(e.target.getAttribute('data-id'));
+            else if (e.target.classList.contains('action-rendre')) rendrePuzzle(e.target.getAttribute('data-id'));
+        });
+
+        function switchTab(tabId, btnElement) {
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+            document.getElementById(tabId).classList.add('active');
+            btnElement.classList.add('active');
+        }
+
+        // --- FETCH GOOGLE SHEETS (HORS IFRAME) ---
+        async function loadPuzzlesFromDrive() {
+            document.getElementById('totalValue').innerText = "Connexion Google...";
+            try {
+                const response = await fetch(GAS_URL);
+                dbPuzzles = await response.json();
+                renderTables();
+                document.getElementById('totalValue').innerText = "Données synchronisées";
+            } catch (e) { document.getElementById('totalValue').innerText = "Erreur de connexion"; }
+        }
+
+        async function syncWithDrive() {
+            document.getElementById('totalValue').innerText = "Sauvegarde en cours...";
+            try {
+                await fetch(GAS_URL, {
+                    method: 'POST',
+                    body: JSON.stringify(dbPuzzles),
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' } // text/plain esquive le blocage CORS
+                });
+                renderTables();
+                document.getElementById('totalValue').innerText = "Sauvegardé !";
+            } catch (e) { alert("Erreur d'écriture réseau."); }
+        }
+
+        // --- CAMÉRA (Maintenant libre !) ---
+        let html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: {width: 250, height: 150} }, false);
+        html5QrcodeScanner.render(
+            function(decodedText) {
+                if(document.getElementById('puzzleBarcode').value === decodedText) return;
+                document.getElementById('manualSearch').value = decodedText;
+                html5QrcodeScanner.pause(); 
+                searchAPI();
+            }, 
+            function(err){}
+        );
+
+        // --- RECHERCHE PONT API ---
+        async function searchAPI() {
+            const barcode = document.getElementById('manualSearch').value.trim();
+            if(!barcode) return;
+            const statusBadge = document.getElementById('scanStatus');
+            statusBadge.innerText = "RECHERCHE..."; statusBadge.style.backgroundColor = "var(--warning)";
+
+            try {
+                // On utilise Google comme Pont
+                const response = await fetch(GAS_URL + "?barcode=" + barcode);
+                const data = await response.json();
+                
+                if(data.items && data.items.length > 0) {
+                    statusBadge.innerText = "TROUVÉ !"; statusBadge.style.backgroundColor = "var(--success)";
+                    document.getElementById('resultCard').style.display = "block";
+                    const item = data.items[0];
+                    document.getElementById('puzzleBarcode').value = barcode;
+                    document.getElementById('puzzleBrand').value = item.brand || "Inconnue";
+                    document.getElementById('puzzleTitle').value = item.title || "Sans titre";
+                    document.getElementById('puzzlePrice').value = (item.offers && item.offers.length > 0) ? (item.offers[0].price + " " + item.offers[0].currency) : "N/A";
+                    let imgUrl = (item.images && item.images.length > 0) ? item.images[0] : "";
+                    document.getElementById('puzzleImgUrl').value = imgUrl;
+                    document.getElementById('puzzleImage').src = imgUrl || "https://via.placeholder.com/150";
+                } else {
+                    throw new Error("Introuvable.");
+                }
+            } catch (error) {
+                statusBadge.innerText = "ERREUR : " + error.message; statusBadge.style.backgroundColor = "var(--danger)";
+                setTimeout(() => { if(html5QrcodeScanner) html5QrcodeScanner.resume(); }, 3000); 
+            }
+        }
+
+        function resetScanner() {
+            document.getElementById('resultCard').style.display = "none";
+            document.getElementById('manualSearch').value = ""; document.getElementById('puzzleBarcode').value = "";
+            document.getElementById('scanStatus').innerText = "PRÊT"; document.getElementById('scanStatus').style.backgroundColor = "var(--warning)";
+            if(html5QrcodeScanner) html5QrcodeScanner.resume(); 
+        }
+
+        function savePuzzle() {
+            dbPuzzles.push({
+                id: Date.now().toString(), barcode: document.getElementById('puzzleBarcode').value,
+                brand: document.getElementById('puzzleBrand').value, title: document.getElementById('puzzleTitle').value,
+                pieces: document.getElementById('puzzlePieces').value, price: document.getElementById('puzzlePrice').value,
+                notes: document.getElementById('puzzleNotes').value, imgUrl: document.getElementById('puzzleImgUrl').value,
+                emprunteur: "", datePret: ""
+            });
+            syncWithDrive(); resetScanner();
+        }
+
+        function deletePuzzle(id) { if(confirm("Supprimer ?")) { dbPuzzles = dbPuzzles.filter(p => p.id != id); syncWithDrive(); } }
+        function preterPuzzle(id) { const nom = prompt("Prêté à ?"); if(nom) { const i = dbPuzzles.findIndex(p => p.id == id); dbPuzzles[i].emprunteur = nom; dbPuzzles[i].datePret = new Date().toLocaleDateString('fr-FR'); syncWithDrive(); } }
+        function rendrePuzzle(id) { const i = dbPuzzles.findIndex(p => p.id == id); dbPuzzles[i].emprunteur = ""; dbPuzzles[i].datePret = ""; syncWithDrive(); }
+
+        function renderTables() {
+            const tbodyLib = document.querySelector('#libTable tbody'); const tbodyLoans = document.querySelector('#loansTable tbody');
+            tbodyLib.innerHTML = ""; tbodyLoans.innerHTML = "";
+            if (!Array.isArray(dbPuzzles)) return;
+
+            dbPuzzles.slice().reverse().forEach(p => {
+                let statusHtml = p.notes || "Aucune note";
+                if(p.emprunteur) statusHtml += '<br><span class="loan-text">⚠️ Prêté à : ' + p.emprunteur + '</span>';
+
+                const trLib = document.createElement('tr');
+                trLib.innerHTML = `<td><img class="cover-preview" src="${p.imgUrl || 'https://via.placeholder.com/80?text=Puzzle'}"></td>
+                    <td>${p.barcode}</td><td><b>${p.brand}</b><br>${p.title}</td><td>${p.pieces || '?'}</td><td>${statusHtml}</td>
+                    <td><button class="btn btn-warning action-preter" data-id="${p.id}" ${p.emprunteur ? 'disabled' : ''}>🤝</button> 
+                    <button class="btn btn-danger action-delete" data-id="${p.id}">🗑️</button></td>`;
+                tbodyLib.appendChild(trLib);
+
+                if(p.emprunteur) {
+                    const trLoan = document.createElement('tr');
+                    trLoan.innerHTML = `<td><b>${p.brand}</b> - ${p.title}</td><td class="loan-text">${p.emprunteur}</td><td>${p.datePret}</td>
+                    <td><button class="btn btn-success action-rendre" data-id="${p.id}">📥 Rendu</button></td>`;
+                    tbodyLoans.appendChild(trLoan);
+                }
+            });
+        }
+        loadPuzzlesFromDrive();
+    </script>
+</body>
+</html>
