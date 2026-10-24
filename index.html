@@ -42,6 +42,13 @@
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
         th { background-color: var(--bg-input); }
         tr:hover { background-color: var(--border); }
+        .edit-overlay { position:fixed; inset:0; background:rgba(0,0,0,.78); z-index:9999; display:none; align-items:center; justify-content:center; padding:14px; }
+        .edit-overlay.open { display:flex; }
+        .edit-dialog { background:var(--bg-card); border:1px solid var(--primary); border-radius:12px; padding:22px; width:min(620px,100%); max-height:90vh; overflow-y:auto; box-sizing:border-box; }
+        .edit-dialog label { display:block; margin-top:8px; }
+        .edit-checkbox { width:20px; height:20px; cursor:pointer; accent-color:var(--primary); }
+        .edit-image { max-width:160px; max-height:130px; object-fit:contain; display:none; margin:8px 0; }
+        body.edit-open { overflow:hidden; }
         .cover-preview { width: 80px; height: 80px; object-fit: cover; border-radius: 5px; }
         .loan-text { color: var(--warning); font-weight: bold; }
         .status-badge { display: inline-block; padding: 5px 15px; border-radius: 20px; font-weight: bold; background: var(--warning); color: var(--text-dark); margin-bottom: 10px; }
@@ -122,10 +129,35 @@
             <button id="btn-refresh-lib" class="btn">🔄 Rafraîchir depuis Google Drive</button>
             <div class="table-responsive">
                 <table id="libTable">
-                    <thead><tr><th>Image</th><th>Code</th><th>Marque / Titre</th><th>Pièces</th><th>État / Remarque / Dimension / Prêt</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>Modifier</th><th>Image</th><th>Code</th><th>Marque / Titre</th><th>Pièces</th><th>État / Remarque / Dimension / Prêt</th><th>Actions</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
+        </div>
+
+        <div id="editOverlay" class="edit-overlay" role="presentation">
+          <section class="edit-dialog" role="dialog" aria-modal="true" aria-labelledby="editHeading">
+            <h2 id="editHeading">✏️ Modifier le puzzle</h2>
+            <form id="editForm">
+              <label for="editBarcode">Code-barres</label><input id="editBarcode" required>
+              <label for="editBrand">Marque</label><input id="editBrand">
+              <label for="editTitle">Titre</label><input id="editTitle" required>
+              <div style="display:flex;gap:10px"><div style="flex:1"><label for="editPieces">Pièces</label><input id="editPieces"></div><div style="flex:1"><label for="editPrice">Prix</label><input id="editPrice"></div></div>
+              <label for="editNotes">État</label><input id="editNotes">
+              <label for="editRemark">Remarque</label><textarea id="editRemark" rows="2"></textarea>
+              <label for="editDimension">Dimension</label><input id="editDimension">
+              <label for="editImageFile">Image du puzzle (remplacer depuis le PC)</label>
+              <input type="file" id="editImageFile" accept="image/*">
+              <img id="editImagePreview" class="edit-image" alt="Aperçu du puzzle">
+              <button type="button" id="editRemoveImage" class="btn btn-danger">Retirer l'image</button>
+              <p id="editImageInfo" style="font-size:12px;color:#a4b0be"></p>
+              <p style="font-size:12px;color:#a4b0be">Le prêt en cours et l'identifiant du puzzle sont conservés.</p>
+              <div style="display:flex;gap:10px;flex-wrap:wrap">
+                <button id="editSave" type="submit" class="btn btn-success">💾 Enregistrer les modifications</button>
+                <button id="editCancel" type="button" class="btn btn-danger">Annuler</button>
+              </div>
+            </form>
+          </section>
         </div>
 
         <div id="tab-loans" class="tab-content">
@@ -150,6 +182,7 @@
     const FIELDS = ['id','barcode','brand','title','pieces','price','notes','imgUrl','emprunteur','datePret','remark','dimension'];
     let dbPuzzles = [], scanner = null, lastCode = '', selectedLoanId = null, scanBusy = false;
     let tokenClient = null, accessToken = '', sheetInfo = null;
+    let editingPuzzleId=null, editingImageData='';
     const el = id => document.getElementById(id);
 
     function setAuthIndicator(connected, message) {
@@ -268,7 +301,7 @@
         if(index>=0){
           const row=index+2;
           await sheetsRequest('/values/'+sheetRange('A'+row+':L'+row)+'?valueInputOption=RAW',{
-            method:'PUT',body:JSON.stringify({range:"'"+sheetInfo.title+"'!A"+row+':J'+row,majorDimension:'ROWS',values})
+            method:'PUT',body:JSON.stringify({range:"'"+sheetInfo.title.replace(/'/g,"''")+"'!A"+row+':L'+row,majorDimension:'ROWS',values})
           });
         }else{
           await sheetsRequest('/values/'+sheetRange('A:L')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{
@@ -324,6 +357,18 @@
     el('btn-remove-image').onclick=clearPuzzleImage;
     el('btn-cancel').onclick=resetScanner;
     el('btn-refresh-lib').onclick=loadPuzzlesFromDrive;
+    el('editCancel').onclick=closeEdit;
+    el('editRemoveImage').onclick=()=>{editingImageData='';updateEditPreview();};
+    el('editImageFile').onchange=async()=>{
+      const file=el('editImageFile').files?.[0];if(!file)return;
+      el('editSave').disabled=true;
+      try{editingImageData=await compressEditImage(file);updateEditPreview();}
+      catch(err){alert('Image non importée : '+err.message);el('editImageFile').value='';}
+      finally{el('editSave').disabled=false;}
+    };
+    el('editForm').onsubmit=saveEditedPuzzle;
+    el('editOverlay').addEventListener('click',e=>{if(e.target===el('editOverlay'))closeEdit();});
+    document.addEventListener('keydown',e=>{if(e.key==='Escape'&&editingPuzzleId!==null)closeEdit();});
     el('btn-refresh-loans').onclick=loadPuzzlesFromDrive;
     document.addEventListener('click',async e=>{
       const b=e.target.closest('button[data-id]');if(!b)return;
@@ -479,12 +524,69 @@
       const p={...old,emprunteur:'',datePret:''};
       try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&!x.emprunteur))}catch(e){alert(e.message)}
     }
+    function updateEditPreview(){
+      const img=el('editImagePreview');
+      if(editingImageData){img.src=editingImageData;img.style.display='block';}
+      else{img.removeAttribute('src');img.style.display='none';}
+      el('editImageInfo').textContent=editingImageData?'Image enregistrable ('+Math.round(editingImageData.length/1024)+' Ko de texte).':'Aucune image.';
+      el('editImageFile').value='';
+    }
+    async function compressEditImage(file){
+      if(!file.type.startsWith('image/'))throw new Error('Choisissez un fichier image.');
+      const url=URL.createObjectURL(file);
+      try{
+        const img=await new Promise((resolve,reject)=>{const i=new Image();i.onload=()=>resolve(i);i.onerror=()=>reject(new Error('Image illisible.'));i.src=url;});
+        const canvas=document.createElement('canvas');
+        const scale=Math.min(1,320/Math.max(img.naturalWidth,img.naturalHeight));
+        canvas.width=Math.max(1,Math.round(img.naturalWidth*scale));canvas.height=Math.max(1,Math.round(img.naturalHeight*scale));
+        const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.drawImage(img,0,0,canvas.width,canvas.height);
+        for(const quality of [0.78,0.65,0.5,0.35,0.22]){
+          const result=canvas.toDataURL('image/jpeg',quality);if(result.length<=40000)return result;
+        }
+        throw new Error('Image trop volumineuse pour Google Sheets.');
+      }finally{URL.revokeObjectURL(url);}
+    }
+    function openEdit(id){
+      if(!accessToken){alert('Connectez-vous à Google.');return;}
+      const p=dbPuzzles.find(p=>String(p.id)===String(id));if(!p)return;
+      editingPuzzleId=String(p.id);editingImageData=p.imgUrl||'';
+      const fields={editBarcode:'barcode',editBrand:'brand',editTitle:'title',editPieces:'pieces',editPrice:'price',editNotes:'notes',editRemark:'remark',editDimension:'dimension'};
+      for(const [element,key] of Object.entries(fields))el(element).value=p[key]||'';
+      updateEditPreview();el('editOverlay').classList.add('open');document.body.classList.add('edit-open');el('editTitle').focus();
+    }
+    function closeEdit(){
+      el('editOverlay').classList.remove('open');document.body.classList.remove('edit-open');
+      editingPuzzleId=null;editingImageData='';
+      document.querySelectorAll('.edit-checkbox').forEach(c=>c.checked=false);
+    }
+    async function saveEditedPuzzle(event){
+      event.preventDefault();if(editingPuzzleId===null)return;
+      const id=editingPuzzleId;
+      const btn=el('editSave');btn.disabled=true;
+      try{
+        // Recharger la ligne pour préserver le prêt courant et détecter une suppression externe.
+        const fresh=(await apiGet()).puzzles;
+        const current=fresh.find(p=>String(p.id)===id);
+        if(!current)throw new Error('Ce puzzle a été supprimé du tableur.');
+        const barcode=el('editBarcode').value.trim(),title=el('editTitle').value.trim();
+        if(!barcode||!title)throw new Error('Code-barres et titre obligatoires.');
+        if(fresh.some(p=>String(p.id)!==id&&String(p.barcode)===barcode))throw new Error('Ce code-barres appartient déjà à un autre puzzle.');
+        const p={...current,barcode,title,brand:el('editBrand').value.trim(),pieces:el('editPieces').value.trim(),price:el('editPrice').value.trim(),notes:el('editNotes').value.trim(),remark:el('editRemark').value.trim(),dimension:el('editDimension').value.trim(),imgUrl:editingImageData};
+        if(p.imgUrl.length>40000)throw new Error('Image trop volumineuse pour Google Sheets.');
+        await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&FIELDS.every(k=>String(x[k]??'')===String(p[k]??''))));
+        closeEdit();alert('Modifications enregistrées !');
+      }catch(err){alert('Modification non enregistrée : '+err.message);}
+      finally{btn.disabled=false;}
+    }
     function cell(tr,value){const td=document.createElement('td');td.textContent=value??'';tr.appendChild(td);return td;}
     function action(tr,label,klass,id,disabled=false){const td=tr.lastElementChild;const b=document.createElement('button');b.className='btn '+klass;b.textContent=label;b.dataset.id=id;b.disabled=disabled;td.appendChild(b);}
     function renderTables(){
       const lib=document.querySelector('#libTable tbody'),loans=document.querySelector('#loansTable tbody');lib.replaceChildren();loans.replaceChildren();
       for(const p of [...dbPuzzles].reverse()){
-        const tr=document.createElement('tr');const imageTd=cell(tr,'');if(p.imgUrl){const img=document.createElement('img');img.className='cover-preview';img.src=p.imgUrl;img.alt='Puzzle';imageTd.appendChild(img)}
+        const tr=document.createElement('tr');
+        const editCell=cell(tr,'');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='edit-checkbox';checkbox.title='Modifier ce puzzle';checkbox.setAttribute('aria-label','Modifier '+(p.title||p.barcode));
+        checkbox.addEventListener('change',()=>{if(checkbox.checked)openEdit(p.id);});editCell.appendChild(checkbox);
+        const imageTd=cell(tr,'');if(p.imgUrl){const img=document.createElement('img');img.className='cover-preview';img.src=p.imgUrl;img.alt='Puzzle';imageTd.appendChild(img)}
         cell(tr,p.barcode);cell(tr,(p.brand||'')+' — '+(p.title||''));cell(tr,p.pieces||'?');cell(tr,[p.notes?('État : '+p.notes):'',p.remark?('Remarque : '+p.remark):'',p.dimension?('Dimension : '+p.dimension):'',p.emprunteur?('Prêté à : '+p.emprunteur):''].filter(Boolean).join(' | '));cell(tr,'');
         action(tr,'🤝 Prêter','btn-warning action-preter',p.id,!!p.emprunteur);action(tr,'🗑️','btn-danger action-delete',p.id);lib.appendChild(tr);
         if(p.emprunteur){const loan=document.createElement('tr');cell(loan,(p.brand||'')+' — '+(p.title||''));cell(loan,p.emprunteur);cell(loan,p.datePret);cell(loan,'');action(loan,'📥 Rendu','btn-success action-rendre',p.id);loans.appendChild(loan)}
