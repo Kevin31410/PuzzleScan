@@ -110,7 +110,10 @@
     const API_URL = "https://script.google.com/macros/s/AKfycbxgid9whakE54so6DbmRfHgmZOwT6m7fSKzOlvZVf3FHub90VsRpiRiP2_KPw4nl8Lt/exec";
     let dbPuzzles = [], scanner = null, lastCode = '';
     const el = id => document.getElementById(id);
-    function configured() { if(API_URL.includes('COLLER_ICI')) { alert('Configurer API_URL dans index.html avec votre URL Apps Script /exec.'); return false; } return true; }
+    function configured() {
+        return API_URL.startsWith("https://script.google.com/macros/s/")
+            && API_URL.endsWith("/exec");
+    }
     function apiGet(params={}) {
       return new Promise((resolve,reject)=>{
         if(!configured()) return reject(new Error('URL Apps Script manquante'));
