@@ -80,7 +80,9 @@
                             <div style="flex:1;"><label>Pièces</label><input type="text" id="puzzlePieces"></div>
                             <div style="flex:1;"><label>Prix</label><input type="text" id="puzzlePrice"></div>
                         </div>
-                        <label>Notes / État</label><textarea id="puzzleNotes" rows="2"></textarea>
+                        <label for="puzzleNotes">État</label><input type="text" id="puzzleNotes" placeholder="Neuf, bon état, incomplet…">
+                        <label for="puzzleRemark">Remarque</label><textarea id="puzzleRemark" rows="2"></textarea>
+                        <label for="puzzleDimension">Dimension</label><input type="text" id="puzzleDimension" placeholder="Ex. : 68 × 48 cm">
                         <div style="display: flex; gap: 10px; margin-top: 15px;">
                             <button id="btn-save" class="btn btn-success" style="flex: 1;">✅ ENREGISTRER LE PUZZLE</button>
                             <button id="btn-cancel" class="btn btn-danger" style="flex: 1;">❌ ANNULER</button>
@@ -107,7 +109,7 @@
             <button id="btn-refresh-lib" class="btn">🔄 Rafraîchir depuis Google Drive</button>
             <div class="table-responsive">
                 <table id="libTable">
-                    <thead><tr><th>Image</th><th>Code</th><th>Marque / Titre</th><th>Pièces</th><th>État/Prêt</th><th>Actions</th></tr></thead>
+                    <thead><tr><th>Image</th><th>Code</th><th>Marque / Titre</th><th>Pièces</th><th>État / Remarque / Dimension / Prêt</th><th>Actions</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
@@ -132,7 +134,7 @@
     const SPREADSHEET_ID = '17LCrnzVYRrK5YbKU4U7D01PkLmhJ_uNlsSPXcSB_JbY';
     const AUTHORIZED_EMAIL = 'larcheapuzzle@gmail.com';
     const SCOPE = 'openid email https://www.googleapis.com/auth/spreadsheets';
-    const FIELDS = ['id','barcode','brand','title','pieces','price','notes','imgUrl','emprunteur','datePret'];
+    const FIELDS = ['id','barcode','brand','title','pieces','price','notes','imgUrl','emprunteur','datePret','remark','dimension'];
     let dbPuzzles = [], scanner = null, lastCode = '', selectedLoanId = null, scanBusy = false;
     let tokenClient = null, accessToken = '', sheetInfo = null;
     const el = id => document.getElementById(id);
@@ -214,10 +216,20 @@
       const meta=await sheetsRequest('?fields=sheets(properties(sheetId,title,index))');
       for(const entry of (meta.sheets||[])){
         const title=entry.properties.title;
-        const range=encodeURIComponent("'"+title.replace(/'/g,"''")+"'!A1:J1");
+        const range=encodeURIComponent("'"+title.replace(/'/g,"''")+"'!A1:L1");
         const first=await sheetsRequest('/values/'+range);
         if(String(first.values?.[0]?.[0]||'').trim()==='ID'){
-          sheetInfo={title,id:entry.properties.sheetId};return sheetInfo;
+          sheetInfo={title,id:entry.properties.sheetId};
+          // Ajouter uniquement les nouveaux en-têtes si les cellules K1 et L1 sont vides.
+          const headers=first.values?.[0]||[];
+          if(!headers[10] && !headers[11]) {
+            await sheetsRequest('/values/'+sheetRange('K1:L1')+'?valueInputOption=RAW',{
+              method:'PUT',body:JSON.stringify({values:[['Remarque','Dimension']]})
+            });
+          } else if(headers[10]!=='Remarque'||headers[11]!=='Dimension') {
+            throw new Error('Les colonnes K et L doivent être intitulées Remarque et Dimension.');
+          }
+          return sheetInfo;
         }
       }
       throw new Error('Aucun onglet avec ID en cellule A1. Vérifiez le tableur Ludotheque_DB.');
@@ -225,7 +237,7 @@
     function sheetRange(a1){return encodeURIComponent("'"+sheetInfo.title.replace(/'/g,"''")+"'!"+a1);}
     async function apiGet(){
       await getSheetInfo();
-      const response=await sheetsRequest('/values/'+sheetRange('A2:J')+'?valueRenderOption=FORMATTED_VALUE');
+      const response=await sheetsRequest('/values/'+sheetRange('A2:L')+'?valueRenderOption=FORMATTED_VALUE');
       const puzzles=(response.values||[]).filter(r=>String(r[0]||'').trim()).map(r=>
         Object.fromEntries(FIELDS.map((field,i)=>[field,String(r[i]??'')])));
       return {ok:true,puzzles};
@@ -241,11 +253,11 @@
         const values=[FIELDS.map(field=>String(p[field]??''))];
         if(index>=0){
           const row=index+2;
-          await sheetsRequest('/values/'+sheetRange('A'+row+':J'+row)+'?valueInputOption=RAW',{
+          await sheetsRequest('/values/'+sheetRange('A'+row+':L'+row)+'?valueInputOption=RAW',{
             method:'PUT',body:JSON.stringify({range:"'"+sheetInfo.title+"'!A"+row+':J'+row,majorDimension:'ROWS',values})
           });
         }else{
-          await sheetsRequest('/values/'+sheetRange('A:J')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{
+          await sheetsRequest('/values/'+sheetRange('A:L')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{
             method:'POST',body:JSON.stringify({values,majorDimension:'ROWS'})
           });
         }
@@ -348,7 +360,7 @@
       el('loanCard').style.display='none';el('resultCard').style.display='block';
       el('formTitle').textContent='Saisie du puzzle';
       el('puzzleBarcode').value=barcode;
-      for(const id of ['puzzleBrand','puzzleTitle','puzzlePieces','puzzlePrice','puzzleNotes','puzzleImgUrl'])el(id).value='';
+      for(const id of ['puzzleBrand','puzzleTitle','puzzlePieces','puzzlePrice','puzzleNotes','puzzleRemark','puzzleDimension','puzzleImgUrl'])el(id).value='';
       el('puzzleImage').removeAttribute('src');el('puzzleImage').style.display='none';
       el('btn-save').disabled=false;
       status('NOUVEAU PUZZLE : COMPLÉTEZ SA FICHE');
@@ -382,7 +394,7 @@
       }catch(e){alert(e.message);button.disabled=false;}
     }
     async function savePuzzle(){
-      const p={id:String(Date.now()),barcode:el('puzzleBarcode').value,brand:el('puzzleBrand').value.trim(),title:el('puzzleTitle').value.trim(),pieces:el('puzzlePieces').value.trim(),price:el('puzzlePrice').value.trim(),notes:el('puzzleNotes').value.trim(),imgUrl:el('puzzleImgUrl').value,emprunteur:'',datePret:''};
+      const p={id:String(Date.now()),barcode:el('puzzleBarcode').value,brand:el('puzzleBrand').value.trim(),title:el('puzzleTitle').value.trim(),pieces:el('puzzlePieces').value.trim(),price:el('puzzlePrice').value.trim(),notes:el('puzzleNotes').value.trim(),remark:el('puzzleRemark').value.trim(),dimension:el('puzzleDimension').value.trim(),imgUrl:el('puzzleImgUrl').value,emprunteur:'',datePret:''};
       if(!p.barcode){alert('Le code-barres est obligatoire.');return;}
       if(!p.title){alert('Le titre est obligatoire.');return;}
       if(p.barcode&&dbPuzzles.some(x=>String(x.barcode)===p.barcode)){alert('Ce code-barres existe déjà.');return;}
@@ -408,7 +420,7 @@
       const lib=document.querySelector('#libTable tbody'),loans=document.querySelector('#loansTable tbody');lib.replaceChildren();loans.replaceChildren();
       for(const p of [...dbPuzzles].reverse()){
         const tr=document.createElement('tr');const imageTd=cell(tr,'');if(p.imgUrl){const img=document.createElement('img');img.className='cover-preview';img.src=p.imgUrl;img.alt='Puzzle';imageTd.appendChild(img)}
-        cell(tr,p.barcode);cell(tr,(p.brand||'')+' — '+(p.title||''));cell(tr,p.pieces||'?');cell(tr,(p.notes||'')+(p.emprunteur?' | Prêté à : '+p.emprunteur:''));cell(tr,'');
+        cell(tr,p.barcode);cell(tr,(p.brand||'')+' — '+(p.title||''));cell(tr,p.pieces||'?');cell(tr,[p.notes?('État : '+p.notes):'',p.remark?('Remarque : '+p.remark):'',p.dimension?('Dimension : '+p.dimension):'',p.emprunteur?('Prêté à : '+p.emprunteur):''].filter(Boolean).join(' | '));cell(tr,'');
         action(tr,'🤝 Prêter','btn-warning action-preter',p.id,!!p.emprunteur);action(tr,'🗑️','btn-danger action-delete',p.id);lib.appendChild(tr);
         if(p.emprunteur){const loan=document.createElement('tr');cell(loan,(p.brand||'')+' — '+(p.title||''));cell(loan,p.emprunteur);cell(loan,p.datePret);cell(loan,'');action(loan,'📥 Rendu','btn-success action-rendre',p.id);loans.appendChild(loan)}
       }
