@@ -5,7 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PuzzleScan - Ludothèque Associative</title>
     <style>
-        :root { --bg-main: #1e272e; --bg-card: #2d3436; --bg-input: #353b48; --primary: #0fb9b1; --text-light: #ffffff; --text-dark: #000000; --danger: #eb3b5a; --success: #20bf6b; --warning: #f39c12; --border: #485460; }
+        :root {
+            --bg-main: #1e272e; --bg-card: #2d3436; --bg-input: #353b48;
+            --primary: #0fb9b1; --text-light: #ffffff; --text-dark: #000000;
+            --danger: #eb3b5a; --success: #20bf6b; --warning: #f39c12; --border: #485460;
+        }
         body { font-family: Arial, sans-serif; background-color: var(--bg-main); color: var(--text-light); margin: 0; padding: 0; }
         nav { background-color: var(--bg-card); display: flex; overflow-x: auto; border-bottom: 2px solid var(--border); }
         nav button { background: none; border: none; color: var(--text-light); padding: 15px 20px; font-size: 16px; cursor: pointer; white-space: nowrap; font-weight: bold; }
@@ -45,17 +49,20 @@
             <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
                 <input type="text" id="manualSearch" placeholder="Code-barres manuel..." style="flex: 1; min-width: 200px;">
                 <button id="btn-search" class="btn btn-primary">🔍 Chercher</button>
+                <button id="btn-create" class="btn btn-warning">✍️ Créer</button>
             </div>
             <div class="scan-layout">
                 <div class="panel" style="text-align: center;">
-                    <h3>Caméra (Android / PC)</h3>
+                    <h3>Caméra</h3>
                     <div id="reader"></div>
+                    <p style="color: #a4b0be; font-size: 12px; margin-top: 10px;">Autorisez l'appareil photo dans votre navigateur.</p>
                 </div>
                 <div class="panel">
                     <div class="status-badge" id="scanStatus">PRÊT À SCANNER</div>
                     <div id="resultCard" style="display: none;">
-                        <img id="puzzleImage" class="cover-preview" src="" style="width: 150px; height: 150px; margin: 0 auto; display: block;">
-                        <input type="hidden" id="puzzleBarcode"><input type="hidden" id="puzzleImgUrl">
+                        <img id="puzzleImage" class="cover-preview" src="" alt="Boîte" style="width: 150px; height: 150px; margin: 0 auto; display: block;">
+                        <input type="hidden" id="puzzleBarcode">
+                        <input type="hidden" id="puzzleImgUrl">
                         <label>Marque</label><input type="text" id="puzzleBrand">
                         <label>Titre</label><input type="text" id="puzzleTitle">
                         <div style="display: flex; gap: 10px;">
@@ -74,9 +81,10 @@
 
         <div id="tab-lib" class="tab-content">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                <h2>Ma Ludothèque</h2><h3 id="totalValue">Chargement...</h3>
+                <h2>Ma Ludothèque</h2>
+                <h3 id="totalValue">Chargement...</h3>
             </div>
-            <button id="btn-refresh-lib" class="btn">🔄 Rafraîchir</button>
+            <button id="btn-refresh-lib" class="btn">🔄 Rafraîchir depuis Google Drive</button>
             <div class="table-responsive">
                 <table id="libTable">
                     <thead><tr><th>Image</th><th>Code</th><th>Marque / Titre</th><th>Pièces</th><th>État/Prêt</th><th>Actions</th></tr></thead>
@@ -90,157 +98,153 @@
             <button id="btn-refresh-loans" class="btn">🔄 Rafraîchir</button>
             <div class="table-responsive">
                 <table id="loansTable">
-                    <thead><tr><th>Puzzle</th><th>Emprunteur</th><th>Date</th><th>Action</th></tr></thead>
+                    <thead><tr><th>Puzzle</th><th>Emprunteur</th><th>Date de prêt</th><th>Action</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
         </div>
     </div>
 
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script>
-        // 🔴🔴🔴 COLIEZ L'URL DE VOTRE GOOGLE APPS SCRIPT ICI 🔴🔴🔴
-        const GAS_URL = "VOTRE_URL_GOOGLE_ICI";
-        let dbPuzzles = [];
-
-        // Navigation
-        document.getElementById('nav-scan').addEventListener('click', function() { switchTab('tab-scan', this); });
-        document.getElementById('nav-lib').addEventListener('click', function() { switchTab('tab-lib', this); });
-        document.getElementById('nav-loans').addEventListener('click', function() { switchTab('tab-loans', this); });
-        document.getElementById('btn-search').addEventListener('click', searchAPI);
-        document.getElementById('btn-save').addEventListener('click', savePuzzle);
-        document.getElementById('btn-cancel').addEventListener('click', resetScanner);
-        document.getElementById('btn-refresh-lib').addEventListener('click', loadPuzzlesFromDrive);
-        document.getElementById('btn-refresh-loans').addEventListener('click', loadPuzzlesFromDrive);
-
-        document.addEventListener('click', function(e) {
-            if (e.target.classList.contains('action-preter')) preterPuzzle(e.target.getAttribute('data-id'));
-            else if (e.target.classList.contains('action-delete')) deletePuzzle(e.target.getAttribute('data-id'));
-            else if (e.target.classList.contains('action-rendre')) rendrePuzzle(e.target.getAttribute('data-id'));
-        });
-
-        function switchTab(tabId, btnElement) {
-            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-            document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
-            document.getElementById(tabId).classList.add('active');
-            btnElement.classList.add('active');
+    const API_URL = 'COLLER_ICI_URL_APPS_SCRIPT';
+    let dbPuzzles = [], scanner = null, lastCode = '';
+    const el = id => document.getElementById(id);
+    function configured() { if(API_URL.includes('COLLER_ICI')) { alert('Configurer API_URL dans index.html avec votre URL Apps Script /exec.'); return false; } return true; }
+    function apiGet(params={}) {
+      return new Promise((resolve,reject)=>{
+        if(!configured()) return reject(new Error('URL Apps Script manquante'));
+        const cb='puzzlescan_cb_'+Date.now()+'_'+Math.floor(Math.random()*1e6);
+        const script=document.createElement('script');
+        let done=false;
+        const finish=(err,data)=>{ if(done)return; done=true; clearTimeout(timer); delete window[cb]; script.remove(); err?reject(err):resolve(data); };
+        window[cb]=data=>finish(null,data);
+        const timer=setTimeout(()=>finish(new Error('Délai de connexion dépassé')),20000);
+        script.onerror=()=>finish(new Error('Impossible de contacter Apps Script. Vérifier le déploiement et ses autorisations.'));
+        const url=new URL(API_URL);
+        Object.entries({...params,callback:cb,_:Date.now()}).forEach(([k,v])=>url.searchParams.set(k,v));
+        script.src=url.toString(); document.head.appendChild(script);
+      });
+    }
+    async function apiWrite(action, data) {
+      if(!configured()) throw new Error('URL Apps Script manquante');
+      // Envoi simple : Apps Script n'autorise pas les réponses CORS depuis une page externe.
+      await fetch(API_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,...data})});
+    }
+    const sleep = ms=>new Promise(r=>setTimeout(r,ms));
+    async function loadPuzzlesFromDrive() {
+      el('totalValue').textContent='Chargement...';
+      try {
+        const res=await apiGet(); if(!res.ok) throw new Error(res.error||'Erreur de lecture');
+        dbPuzzles=Array.isArray(res.puzzles)?res.puzzles:[];
+        renderTables(); el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';
+      } catch(e) { el('totalValue').textContent='Erreur de chargement'; alert(e.message); }
+    }
+    async function writeAndVerify(action, data, predicate) {
+      el('totalValue').textContent='Enregistrement...';
+      await apiWrite(action,data);
+      for(let attempt=0;attempt<5;attempt++) {
+        await sleep(1200);
+        const res=await apiGet();
+        if(!res.ok) throw new Error(res.error||'Erreur de relecture');
+        if(predicate(res.puzzles||[])) {
+          dbPuzzles=res.puzzles; renderTables(); el('totalValue').textContent=dbPuzzles.length+' puzzle(s)'; return;
         }
-
-        // --- FETCH GOOGLE SHEETS (HORS IFRAME) ---
-        async function loadPuzzlesFromDrive() {
-            document.getElementById('totalValue').innerText = "Connexion Google...";
-            try {
-                const response = await fetch(GAS_URL);
-                dbPuzzles = await response.json();
-                renderTables();
-                document.getElementById('totalValue').innerText = "Données synchronisées";
-            } catch (e) { document.getElementById('totalValue').innerText = "Erreur de connexion"; }
-        }
-
-        async function syncWithDrive() {
-            document.getElementById('totalValue').innerText = "Sauvegarde en cours...";
-            try {
-                await fetch(GAS_URL, {
-                    method: 'POST',
-                    body: JSON.stringify(dbPuzzles),
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' } // text/plain esquive le blocage CORS
-                });
-                renderTables();
-                document.getElementById('totalValue').innerText = "Sauvegardé !";
-            } catch (e) { alert("Erreur d'écriture réseau."); }
-        }
-
-        // --- CAMÉRA (Maintenant libre !) ---
-        let html5QrcodeScanner = new Html5QrcodeScanner("reader", { fps: 10, qrbox: {width: 250, height: 150} }, false);
-        html5QrcodeScanner.render(
-            function(decodedText) {
-                if(document.getElementById('puzzleBarcode').value === decodedText) return;
-                document.getElementById('manualSearch').value = decodedText;
-                html5QrcodeScanner.pause(); 
-                searchAPI();
-            }, 
-            function(err){}
-        );
-
-        // --- RECHERCHE PONT API ---
-        async function searchAPI() {
-            const barcode = document.getElementById('manualSearch').value.trim();
-            if(!barcode) return;
-            const statusBadge = document.getElementById('scanStatus');
-            statusBadge.innerText = "RECHERCHE..."; statusBadge.style.backgroundColor = "var(--warning)";
-
-            try {
-                // On utilise Google comme Pont
-                const response = await fetch(GAS_URL + "?barcode=" + barcode);
-                const data = await response.json();
-                
-                if(data.items && data.items.length > 0) {
-                    statusBadge.innerText = "TROUVÉ !"; statusBadge.style.backgroundColor = "var(--success)";
-                    document.getElementById('resultCard').style.display = "block";
-                    const item = data.items[0];
-                    document.getElementById('puzzleBarcode').value = barcode;
-                    document.getElementById('puzzleBrand').value = item.brand || "Inconnue";
-                    document.getElementById('puzzleTitle').value = item.title || "Sans titre";
-                    document.getElementById('puzzlePrice').value = (item.offers && item.offers.length > 0) ? (item.offers[0].price + " " + item.offers[0].currency) : "N/A";
-                    let imgUrl = (item.images && item.images.length > 0) ? item.images[0] : "";
-                    document.getElementById('puzzleImgUrl').value = imgUrl;
-                    document.getElementById('puzzleImage').src = imgUrl || "https://via.placeholder.com/150";
-                } else {
-                    throw new Error("Introuvable.");
-                }
-            } catch (error) {
-                statusBadge.innerText = "ERREUR : " + error.message; statusBadge.style.backgroundColor = "var(--danger)";
-                setTimeout(() => { if(html5QrcodeScanner) html5QrcodeScanner.resume(); }, 3000); 
-            }
-        }
-
-        function resetScanner() {
-            document.getElementById('resultCard').style.display = "none";
-            document.getElementById('manualSearch').value = ""; document.getElementById('puzzleBarcode').value = "";
-            document.getElementById('scanStatus').innerText = "PRÊT"; document.getElementById('scanStatus').style.backgroundColor = "var(--warning)";
-            if(html5QrcodeScanner) html5QrcodeScanner.resume(); 
-        }
-
-        function savePuzzle() {
-            dbPuzzles.push({
-                id: Date.now().toString(), barcode: document.getElementById('puzzleBarcode').value,
-                brand: document.getElementById('puzzleBrand').value, title: document.getElementById('puzzleTitle').value,
-                pieces: document.getElementById('puzzlePieces').value, price: document.getElementById('puzzlePrice').value,
-                notes: document.getElementById('puzzleNotes').value, imgUrl: document.getElementById('puzzleImgUrl').value,
-                emprunteur: "", datePret: ""
-            });
-            syncWithDrive(); resetScanner();
-        }
-
-        function deletePuzzle(id) { if(confirm("Supprimer ?")) { dbPuzzles = dbPuzzles.filter(p => p.id != id); syncWithDrive(); } }
-        function preterPuzzle(id) { const nom = prompt("Prêté à ?"); if(nom) { const i = dbPuzzles.findIndex(p => p.id == id); dbPuzzles[i].emprunteur = nom; dbPuzzles[i].datePret = new Date().toLocaleDateString('fr-FR'); syncWithDrive(); } }
-        function rendrePuzzle(id) { const i = dbPuzzles.findIndex(p => p.id == id); dbPuzzles[i].emprunteur = ""; dbPuzzles[i].datePret = ""; syncWithDrive(); }
-
-        function renderTables() {
-            const tbodyLib = document.querySelector('#libTable tbody'); const tbodyLoans = document.querySelector('#loansTable tbody');
-            tbodyLib.innerHTML = ""; tbodyLoans.innerHTML = "";
-            if (!Array.isArray(dbPuzzles)) return;
-
-            dbPuzzles.slice().reverse().forEach(p => {
-                let statusHtml = p.notes || "Aucune note";
-                if(p.emprunteur) statusHtml += '<br><span class="loan-text">⚠️ Prêté à : ' + p.emprunteur + '</span>';
-
-                const trLib = document.createElement('tr');
-                trLib.innerHTML = `<td><img class="cover-preview" src="${p.imgUrl || 'https://via.placeholder.com/80?text=Puzzle'}"></td>
-                    <td>${p.barcode}</td><td><b>${p.brand}</b><br>${p.title}</td><td>${p.pieces || '?'}</td><td>${statusHtml}</td>
-                    <td><button class="btn btn-warning action-preter" data-id="${p.id}" ${p.emprunteur ? 'disabled' : ''}>🤝</button> 
-                    <button class="btn btn-danger action-delete" data-id="${p.id}">🗑️</button></td>`;
-                tbodyLib.appendChild(trLib);
-
-                if(p.emprunteur) {
-                    const trLoan = document.createElement('tr');
-                    trLoan.innerHTML = `<td><b>${p.brand}</b> - ${p.title}</td><td class="loan-text">${p.emprunteur}</td><td>${p.datePret}</td>
-                    <td><button class="btn btn-success action-rendre" data-id="${p.id}">📥 Rendu</button></td>`;
-                    tbodyLoans.appendChild(trLoan);
-                }
-            });
-        }
-        loadPuzzlesFromDrive();
+      }
+      throw new Error('Enregistrement non confirmé. Vérifiez les données dans Google Sheets avant de recommencer.');
+    }
+    function switchTab(tabId,button) {
+      document.querySelectorAll('.tab-content').forEach(x=>x.classList.remove('active'));
+      document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+      el(tabId).classList.add('active');button.classList.add('active');
+      renderTables();
+    }
+    el('nav-scan').onclick=function(){switchTab('tab-scan',this)};
+    el('nav-lib').onclick=function(){switchTab('tab-lib',this)};
+    el('nav-loans').onclick=function(){switchTab('tab-loans',this)};
+    el('btn-search').onclick=searchAPI;
+    el('btn-create').onclick=()=>afficherResultat(el('manualSearch').value.trim(),{});
+    el('btn-save').onclick=savePuzzle;
+    el('btn-cancel').onclick=resetScanner;
+    el('btn-refresh-lib').onclick=loadPuzzlesFromDrive;
+    el('btn-refresh-loans').onclick=loadPuzzlesFromDrive;
+    document.addEventListener('click',async e=>{
+      const b=e.target.closest('button[data-id]');if(!b)return;
+      const id=b.dataset.id;
+      if(b.classList.contains('action-preter'))await preterPuzzle(id);
+      if(b.classList.contains('action-rendre'))await rendrePuzzle(id);
+      if(b.classList.contains('action-delete'))await deletePuzzle(id);
+    });
+    function status(text,kind='warning') {
+      el('scanStatus').textContent=text;
+      el('scanStatus').style.backgroundColor=`var(--${kind})`;
+    }
+    function initCamera() {
+      if(!window.Html5QrcodeScanner){el('reader').textContent='Bibliothèque scanner indisponible.';return;}
+      try {
+        scanner=new Html5QrcodeScanner('reader',{fps:10,qrbox:{width:250,height:150},formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E,Html5QrcodeSupportedFormats.CODE_128]},false);
+        scanner.render(code=>{if(code===lastCode)return;lastCode=code;el('manualSearch').value=code;scanner.pause(true);searchAPI();},()=>{});
+      }catch(e){el('reader').textContent='Caméra indisponible : '+e.message;}
+    }
+    function resetScanner(){el('resultCard').style.display='none';el('manualSearch').value='';el('puzzleBarcode').value='';lastCode='';status('PRÊT À SCANNER');try{scanner?.resume()}catch(e){}}
+    async function searchAPI(){
+      const barcode=el('manualSearch').value.trim();if(!barcode){alert('Saisir ou scanner un code-barres.');return;}
+      const existing=dbPuzzles.find(p=>String(p.barcode)===barcode);
+      if(existing){status('DÉJÀ DANS LA LUDOTHÈQUE','success');afficherResultat(barcode,existing,true);return;}
+      status('RECHERCHE EN COURS...');
+      try {
+        const res=await apiGet({barcode});
+        if(!res.ok)throw new Error(res.error);
+        if(res.status===429)throw new Error('Limite de recherche atteinte');
+        if(!res.data?.items?.length)throw new Error('Code inconnu. Cliquez sur Créer pour saisir le puzzle.');
+        afficherResultat(barcode,res.data.items[0]);status('PUZZLE TROUVÉ','success');
+      }catch(e){status('RECHERCHE : '+e.message,'danger');}
+    }
+    function afficherResultat(barcode,item,existing=false){
+      el('resultCard').style.display='block';
+      el('puzzleBarcode').value=barcode;
+      el('puzzleBrand').value=item.brand||'';
+      el('puzzleTitle').value=item.title||'';
+      el('puzzlePieces').value=item.pieces||'';
+      el('puzzlePrice').value=item.price||(item.offers?.[0] ? item.offers[0].price+' '+(item.offers[0].currency||'') : '');
+      el('puzzleNotes').value=item.notes||'';
+      const image=item.imgUrl||item.images?.[0]||'';
+      el('puzzleImgUrl').value=image;el('puzzleImage').src=image||'';
+      el('btn-save').disabled=existing;
+      if(!existing)status('SAISIE DU PUZZLE');
+    }
+    async function savePuzzle(){
+      const p={id:String(Date.now()),barcode:el('puzzleBarcode').value,brand:el('puzzleBrand').value.trim(),title:el('puzzleTitle').value.trim(),pieces:el('puzzlePieces').value.trim(),price:el('puzzlePrice').value.trim(),notes:el('puzzleNotes').value.trim(),imgUrl:el('puzzleImgUrl').value,emprunteur:'',datePret:''};
+      if(!p.title){alert('Le titre est obligatoire.');return;}
+      if(p.barcode&&dbPuzzles.some(x=>String(x.barcode)===p.barcode)){alert('Ce code-barres existe déjà.');return;}
+      el('btn-save').disabled=true;
+      try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===p.id));alert('Puzzle enregistré !');resetScanner()}
+      catch(e){alert(e.message)}finally{el('btn-save').disabled=false}
+    }
+    async function deletePuzzle(id){if(!confirm('Supprimer définitivement ce puzzle ?'))return;
+      try{await writeAndVerify('delete',{id},rows=>!rows.some(x=>String(x.id)===id))}catch(e){alert(e.message)}
+    }
+    async function preterPuzzle(id){const name=prompt('Nom de l’emprunteur :');if(!name?.trim())return;
+      const old=dbPuzzles.find(x=>String(x.id)===id);if(!old)return;
+      const p={...old,emprunteur:name.trim(),datePret:new Date().toLocaleDateString('fr-FR')};
+      try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&x.emprunteur===p.emprunteur))}catch(e){alert(e.message)}
+    }
+    async function rendrePuzzle(id){const old=dbPuzzles.find(x=>String(x.id)===id);if(!old)return;
+      const p={...old,emprunteur:'',datePret:''};
+      try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&!x.emprunteur))}catch(e){alert(e.message)}
+    }
+    function cell(tr,value){const td=document.createElement('td');td.textContent=value??'';tr.appendChild(td);return td;}
+    function action(tr,label,klass,id,disabled=false){const td=tr.lastElementChild;const b=document.createElement('button');b.className='btn '+klass;b.textContent=label;b.dataset.id=id;b.disabled=disabled;td.appendChild(b);}
+    function renderTables(){
+      const lib=document.querySelector('#libTable tbody'),loans=document.querySelector('#loansTable tbody');lib.replaceChildren();loans.replaceChildren();
+      for(const p of [...dbPuzzles].reverse()){
+        const tr=document.createElement('tr');const imageTd=cell(tr,'');if(p.imgUrl){const img=document.createElement('img');img.className='cover-preview';img.src=p.imgUrl;img.alt='Puzzle';imageTd.appendChild(img)}
+        cell(tr,p.barcode);cell(tr,(p.brand||'')+' — '+(p.title||''));cell(tr,p.pieces||'?');cell(tr,(p.notes||'')+(p.emprunteur?' | Prêté à : '+p.emprunteur:''));cell(tr,'');
+        action(tr,'🤝 Prêter','btn-warning action-preter',p.id,!!p.emprunteur);action(tr,'🗑️','btn-danger action-delete',p.id);lib.appendChild(tr);
+        if(p.emprunteur){const loan=document.createElement('tr');cell(loan,(p.brand||'')+' — '+(p.title||''));cell(loan,p.emprunteur);cell(loan,p.datePret);cell(loan,'');action(loan,'📥 Rendu','btn-success action-rendre',p.id);loans.appendChild(loan)}
+      }
+    }
+    initCamera();loadPuzzlesFromDrive();
     </script>
 </body>
 </html>
