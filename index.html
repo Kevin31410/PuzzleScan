@@ -107,7 +107,7 @@
 
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script>
-    const API_URL = 'COLLER_ICI_URL_APPS_SCRIPT';
+    const API_URL = "https://script.google.com/macros/s/AKfycbxgid9whakE54so6DbmRfHgmZOwT6m7fSKzOlvZVf3FHub90VsRpiRiP2_KPw4nl8Lt/exec";
     let dbPuzzles = [], scanner = null, lastCode = '';
     const el = id => document.getElementById(id);
     function configured() { if(API_URL.includes('COLLER_ICI')) { alert('Configurer API_URL dans index.html avec votre URL Apps Script /exec.'); return false; } return true; }
