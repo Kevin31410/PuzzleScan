@@ -81,6 +81,12 @@
                         <img id="puzzleImage" class="cover-preview" src="" alt="Boîte" style="width: 150px; height: 150px; margin: 0 auto; display: block;">
                         <input type="hidden" id="puzzleBarcode">
                         <input type="hidden" id="puzzleImgUrl">
+                        <label for="puzzleImageFile">Image du puzzle (depuis votre ordinateur)</label>
+                        <input type="file" id="puzzleImageFile" accept="image/*" style="margin-bottom:4px;">
+                        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+                            <button type="button" id="btn-remove-image" class="btn btn-danger" style="margin:0;display:none;">Retirer l'image</button>
+                            <span id="imageInfo" style="font-size:12px;color:#a4b0be;">Image réduite automatiquement pour Google Sheets (colonne H).</span>
+                        </div>
                         <label>Marque</label><input type="text" id="puzzleBrand">
                         <label>Titre</label><input type="text" id="puzzleTitle">
                         <div style="display: flex; gap: 10px;">
@@ -314,6 +320,8 @@
     el('btn-cancel-loan').onclick=resetScanner;
     el('btn-create').onclick=()=>showPuzzleEntry(el('manualSearch').value.trim());
     el('btn-save').onclick=savePuzzle;
+    el('puzzleImageFile').addEventListener('change',importPuzzleImage);
+    el('btn-remove-image').onclick=clearPuzzleImage;
     el('btn-cancel').onclick=resetScanner;
     el('btn-refresh-lib').onclick=loadPuzzlesFromDrive;
     el('btn-refresh-loans').onclick=loadPuzzlesFromDrive;
@@ -363,13 +371,61 @@
         scanBusy=false;lastCode='';try{scanner?.resume()}catch(err){}
       }
     }
+    // Une cellule Google Sheets accepte au maximum 50 000 caractères.
+    // La photo est convertie en JPEG Base64 (data URI) et stockée en colonne H.
+    function clearPuzzleImage(){
+      el('puzzleImageFile').value='';
+      el('puzzleImgUrl').value='';
+      el('puzzleImage').removeAttribute('src');
+      el('puzzleImage').style.display='none';
+      el('btn-remove-image').style.display='none';
+      el('imageInfo').textContent='Aucune image sélectionnée.';
+    }
+    async function importPuzzleImage(){
+      const file=el('puzzleImageFile').files?.[0];
+      if(!file){clearPuzzleImage();return;}
+      if(!file.type.startsWith('image/')){alert('Sélectionnez un fichier image.');clearPuzzleImage();return;}
+      const save=el('btn-save');save.disabled=true;
+      el('imageInfo').textContent='Préparation de l’image…';
+      try{
+        const url=URL.createObjectURL(file);
+        let bitmap;
+        try{
+          bitmap=await new Promise((resolve,reject)=>{
+            const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(new Error('Image illisible.'));
+            img.src=url;
+          });
+          const canvas=document.createElement('canvas');
+          const maxSide=320;
+          const scale=Math.min(1,maxSide/Math.max(bitmap.naturalWidth,bitmap.naturalHeight));
+          canvas.width=Math.max(1,Math.round(bitmap.naturalWidth*scale));
+          canvas.height=Math.max(1,Math.round(bitmap.naturalHeight*scale));
+          const ctx=canvas.getContext('2d');
+          ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);
+          ctx.drawImage(bitmap,0,0,canvas.width,canvas.height);
+          let encoded='';
+          for(const quality of [0.78,0.65,0.5,0.35,0.22]){
+            encoded=canvas.toDataURL('image/jpeg',quality);
+            if(encoded.length<=40000)break;
+          }
+          if(encoded.length>40000)throw new Error('Image trop volumineuse même après compression.');
+          el('puzzleImgUrl').value=encoded;
+          el('puzzleImage').src=encoded;
+          el('puzzleImage').style.display='block';
+          el('btn-remove-image').style.display='inline-block';
+          el('imageInfo').textContent='Image prête : '+Math.round(encoded.length/1024)+' Ko de texte Base64.';
+        }finally{URL.revokeObjectURL(url);}
+      }catch(err){clearPuzzleImage();alert('Impossible de préparer l’image : '+err.message);}
+      finally{save.disabled=false;}
+    }
+
     function showPuzzleEntry(barcode){
       scanBusy=false;selectedLoanId=null;
       el('loanCard').style.display='none';el('resultCard').style.display='block';
       el('formTitle').textContent='Saisie du puzzle';
       el('puzzleBarcode').value=barcode;
       for(const id of ['puzzleBrand','puzzleTitle','puzzlePieces','puzzlePrice','puzzleNotes','puzzleRemark','puzzleDimension','puzzleImgUrl'])el(id).value='';
-      el('puzzleImage').removeAttribute('src');el('puzzleImage').style.display='none';
+      clearPuzzleImage();
       el('btn-save').disabled=false;
       status('NOUVEAU PUZZLE : COMPLÉTEZ SA FICHE');
       el('puzzleTitle').focus();
@@ -405,6 +461,7 @@
       const p={id:String(Date.now()),barcode:el('puzzleBarcode').value,brand:el('puzzleBrand').value.trim(),title:el('puzzleTitle').value.trim(),pieces:el('puzzlePieces').value.trim(),price:el('puzzlePrice').value.trim(),notes:el('puzzleNotes').value.trim(),remark:el('puzzleRemark').value.trim(),dimension:el('puzzleDimension').value.trim(),imgUrl:el('puzzleImgUrl').value,emprunteur:'',datePret:''};
       if(!p.barcode){alert('Le code-barres est obligatoire.');return;}
       if(!p.title){alert('Le titre est obligatoire.');return;}
+      if(p.imgUrl.length>40000){alert('Image trop volumineuse pour Google Sheets.');return;}
       if(p.barcode&&dbPuzzles.some(x=>String(x.barcode)===p.barcode)){alert('Ce code-barres existe déjà.');return;}
       el('btn-save').disabled=true;
       try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===p.id));alert('Puzzle enregistré !');resetScanner()}
