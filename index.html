@@ -163,12 +163,23 @@
         <div id="tab-loans" class="tab-content">
             <h2>Gestion des Prêts</h2>
             <button id="btn-refresh-loans" class="btn">🔄 Rafraîchir</button>
-            <div class="table-responsive">
+            <div class="loan-tabs" role="tablist" aria-label="État des prêts">
+                <button class="btn btn-primary" id="showActiveLoans" type="button">📤 Prêts non rendus</button>
+                <button class="btn" id="showReturnedLoans" type="button">📥 Prêts rendus (historique)</button>
+            </div>
+            <div class="table-responsive" id="activeLoansPanel">
                 <table id="loansTable">
                     <thead><tr><th>Puzzle</th><th>Emprunteur</th><th>Date de prêt</th><th>Action</th></tr></thead>
                     <tbody></tbody>
                 </table>
             </div>
+            <div class="table-responsive" id="returnedLoansPanel" style="display:none">
+                <table id="returnedLoansTable">
+                    <thead><tr><th>Puzzle</th><th>Emprunteur</th><th>Date de prêt</th><th>Date de retour</th></tr></thead>
+                    <tbody></tbody>
+                </table>
+            </div>
+            <p id="loanHistoryStatus" style="font-size:12px;color:#a4b0be"></p>
         </div>
     </div>
 
@@ -180,6 +191,7 @@
     const AUTHORIZED_EMAIL = 'larcheapuzzle@gmail.com';
     const SCOPE = 'openid email https://www.googleapis.com/auth/spreadsheets';
     const FIELDS = ['id','barcode','brand','title','pieces','price','notes','imgUrl','emprunteur','datePret','remark','dimension'];
+    let loanHistory = [], historySheetInfo = null;
     let dbPuzzles = [], scanner = null, lastCode = '', selectedLoanId = null, scanBusy = false;
     let tokenClient = null, accessToken = '', sheetInfo = null;
     let editingPuzzleId=null, editingImageData='';
@@ -222,7 +234,7 @@
         }
         // Le contrôle d'accès aux données est appliqué par Google Sheets :
         // seuls les comptes ayant accès au tableur peuvent lire et écrire.
-        sheetInfo=null;
+        sheetInfo=null;historySheetInfo=null;loanHistory=[];
         el('authStatus').textContent='Connecté à Google. Accès au tableur en cours de vérification…';
         await getSheetInfo();
         el('authStatus').textContent='Connecté à L’Arche à Puzzle';
@@ -239,7 +251,7 @@
     }
     function logout(){
       if(accessToken&&window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(accessToken,()=>{});
-      accessToken='';sheetInfo=null;dbPuzzles=[];renderTables();
+      accessToken='';sheetInfo=null;historySheetInfo=null;loanHistory=[];dbPuzzles=[];renderTables();
       setAuthIndicator(false,'Déconnecté');
       el('totalValue').textContent='Connexion requise';
       el('authStatus').textContent='Non connecté';
@@ -281,6 +293,57 @@
       }
       throw new Error('Aucun onglet avec ID en cellule A1. Vérifiez le tableur Ludotheque_DB.');
     }
+    // Historique indépendant : chaque prêt possède sa propre ligne, même après retour.
+    const LOAN_HEADERS=['ID_Pret','ID_Puzzle','Code_barres','Marque','Titre','Emprunteur','Date_Pret','Date_Retour'];
+    async function ensureHistorySheet(){
+      if(historySheetInfo)return historySheetInfo;
+      const meta=await sheetsRequest('?fields=sheets(properties(sheetId,title))');
+      let tab=(meta.sheets||[]).find(x=>x.properties.title==='Historique_Prets');
+      if(!tab){
+        const created=await sheetsRequest(':batchUpdate',{method:'POST',body:JSON.stringify({requests:[{addSheet:{properties:{title:'Historique_Prets'}}}]})});
+        tab={properties:created.replies[0].addSheet.properties};
+      }
+      const range=encodeURIComponent("'Historique_Prets'!A1:H1");
+      const first=await sheetsRequest('/values/'+range);
+      if(!first.values?.length){
+        await sheetsRequest('/values/'+range+'?valueInputOption=RAW',{method:'PUT',body:JSON.stringify({values:[LOAN_HEADERS]})});
+      }else if(LOAN_HEADERS.some((h,i)=>first.values[0][i]!==h)){
+        throw new Error('En-têtes inattendus dans Historique_Prets : aucune donnée modifiée.');
+      }
+      historySheetInfo={id:tab.properties.sheetId,title:'Historique_Prets'};
+      return historySheetInfo;
+    }
+    async function loadLoanHistory(){
+      await ensureHistorySheet();
+      const r=await sheetsRequest('/values/'+encodeURIComponent("'Historique_Prets'!A2:H")+'?valueRenderOption=FORMATTED_VALUE');
+      loanHistory=(r.values||[]).filter(x=>x[0]).map((x,i)=>({loanId:x[0],puzzleId:x[1]||'',barcode:x[2]||'',brand:x[3]||'',title:x[4]||'',borrower:x[5]||'',start:x[6]||'',end:x[7]||'',row:i+2}));
+      return loanHistory;
+    }
+    function todayLocal(){return new Date().toLocaleDateString('fr-FR');}
+    async function recordLoan(p,borrower,date){
+      await loadLoanHistory();
+      if(loanHistory.some(x=>x.puzzleId===String(p.id)&&!x.end))return; // évite un doublon après une reprise
+      const values=[[String(Date.now())+'-'+Math.random().toString(36).slice(2,8),String(p.id),p.barcode||'',p.brand||'',p.title||'',borrower,date,'']];
+      await sheetsRequest('/values/'+encodeURIComponent("'Historique_Prets'!A:H")+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{method:'POST',body:JSON.stringify({values})});
+      await loadLoanHistory();
+    }
+    async function closeLoan(p){
+      await loadLoanHistory();
+      let open=[...loanHistory].reverse().find(x=>x.puzzleId===String(p.id)&&!x.end);
+      // Un prêt enregistré avant cette mise à jour n'a pas encore de ligne historique.
+      if(!open){await recordLoan(p,p.emprunteur,p.datePret||'Date inconnue');await loadLoanHistory();open=[...loanHistory].reverse().find(x=>x.puzzleId===String(p.id)&&!x.end);}
+      if(!open)throw new Error('Impossible de retrouver le prêt à clôturer.');
+      await sheetsRequest('/values/'+encodeURIComponent("'Historique_Prets'!H"+open.row)+'?valueInputOption=RAW',{method:'PUT',body:JSON.stringify({values:[[todayLocal()]]})});
+      await loadLoanHistory();
+    }
+    function showLoanPanel(returned){
+      el('activeLoansPanel').style.display=returned?'none':'block';
+      el('returnedLoansPanel').style.display=returned?'block':'none';
+      el('showActiveLoans').className='btn'+(returned?'':' btn-primary');
+      el('showReturnedLoans').className='btn'+(returned?' btn-primary':'');
+    }
+    el('showActiveLoans').onclick=()=>showLoanPanel(false);
+    el('showReturnedLoans').onclick=()=>showLoanPanel(true);
     function sheetRange(a1){return encodeURIComponent("'"+sheetInfo.title.replace(/'/g,"''")+"'!"+a1);}
     async function apiGet(){
       await getSheetInfo();
@@ -321,7 +384,7 @@
       if(!accessToken){el('totalValue').textContent='Connexion requise';return;}
       el('totalValue').textContent='Chargement...';
       try{
-        const res=await apiGet();dbPuzzles=res.puzzles;renderTables();
+        const res=await apiGet();dbPuzzles=res.puzzles;await loadLoanHistory();renderTables();
         el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';
       }catch(e){el('totalValue').textContent='Erreur de chargement';alert(e.message);}
     }
@@ -331,7 +394,7 @@
       for(let attempt=0;attempt<3;attempt++){
         const res=await apiGet();
         if(predicate(res.puzzles)){
-          dbPuzzles=res.puzzles;renderTables();
+          dbPuzzles=res.puzzles;await loadLoanHistory();renderTables();
           el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';return;
         }
         await sleep(500);
@@ -499,6 +562,7 @@
         if(current.emprunteur)throw new Error('Ce puzzle est déjà prêté à '+current.emprunteur);
         const p={...current,emprunteur:name,datePret:new Date().toLocaleDateString('fr-FR')};
         await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&x.emprunteur===name));
+        await recordLoan(p,name,p.datePret);renderTables();
         alert('Prêt enregistré !');resetScanner();
       }catch(e){alert(e.message);button.disabled=false;}
     }
@@ -518,11 +582,11 @@
     async function preterPuzzle(id){const name=prompt('Nom de l’emprunteur :');if(!name?.trim())return;
       const old=dbPuzzles.find(x=>String(x.id)===id);if(!old)return;
       const p={...old,emprunteur:name.trim(),datePret:new Date().toLocaleDateString('fr-FR')};
-      try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&x.emprunteur===p.emprunteur))}catch(e){alert(e.message)}
+      try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&x.emprunteur===p.emprunteur));await recordLoan(p,p.emprunteur,p.datePret);renderTables()}catch(e){alert(e.message)}
     }
     async function rendrePuzzle(id){const old=dbPuzzles.find(x=>String(x.id)===id);if(!old)return;
       const p={...old,emprunteur:'',datePret:''};
-      try{await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&!x.emprunteur))}catch(e){alert(e.message)}
+      try{await closeLoan(old);await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&!x.emprunteur));renderTables()}catch(e){alert(e.message)}
     }
     function updateEditPreview(){
       const img=el('editImagePreview');
@@ -581,7 +645,7 @@
     function cell(tr,value){const td=document.createElement('td');td.textContent=value??'';tr.appendChild(td);return td;}
     function action(tr,label,klass,id,disabled=false){const td=tr.lastElementChild;const b=document.createElement('button');b.className='btn '+klass;b.textContent=label;b.dataset.id=id;b.disabled=disabled;td.appendChild(b);}
     function renderTables(){
-      const lib=document.querySelector('#libTable tbody'),loans=document.querySelector('#loansTable tbody');lib.replaceChildren();loans.replaceChildren();
+      const lib=document.querySelector('#libTable tbody'),loans=document.querySelector('#loansTable tbody'),returned=document.querySelector('#returnedLoansTable tbody');lib.replaceChildren();loans.replaceChildren();returned.replaceChildren();
       for(const p of [...dbPuzzles].reverse()){
         const tr=document.createElement('tr');
         const editCell=cell(tr,'');const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='edit-checkbox';checkbox.title='Modifier ce puzzle';checkbox.setAttribute('aria-label','Modifier '+(p.title||p.barcode));
@@ -591,6 +655,14 @@
         action(tr,'🤝 Prêter','btn-warning action-preter',p.id,!!p.emprunteur);action(tr,'🗑️','btn-danger action-delete',p.id);lib.appendChild(tr);
         if(p.emprunteur){const loan=document.createElement('tr');cell(loan,(p.brand||'')+' — '+(p.title||''));cell(loan,p.emprunteur);cell(loan,p.datePret);cell(loan,'');action(loan,'📥 Rendu','btn-success action-rendre',p.id);loans.appendChild(loan)}
       }
+      for(const loan of [...loanHistory].filter(x=>x.end).reverse()){
+        const tr=document.createElement('tr');
+        cell(tr,(loan.brand||'')+' — '+(loan.title||loan.barcode));cell(tr,loan.borrower);cell(tr,loan.start);cell(tr,loan.end);
+        returned.appendChild(tr);
+      }
+      el('showActiveLoans').textContent='📤 Prêts non rendus ('+dbPuzzles.filter(p=>p.emprunteur).length+')';
+      el('showReturnedLoans').textContent='📥 Prêts rendus ('+loanHistory.filter(x=>x.end).length+')';
+      el('loanHistoryStatus').textContent='Historique conservé dans l’onglet Google Sheets Historique_Prets. Les prêts rendus avant cette mise à jour ne peuvent pas être reconstitués.';
     }
     initCamera();
     // Tentative de connexion automatique. Certains navigateurs exigent un clic utilisateur
