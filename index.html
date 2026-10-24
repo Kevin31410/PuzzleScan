@@ -35,6 +35,8 @@
         button.btn-danger { background-color: var(--danger); color: var(--text-light); }
         button.btn-warning { background-color: var(--warning); color: var(--text-dark); }
         #reader { width: 100%; max-width: 400px; margin: 0 auto; border: 2px solid var(--primary); border-radius: 10px; overflow: hidden; background: black; }
+        /* Effet miroir gauche/droite sur l’aperçu uniquement : la détection reste inchangée. */
+        #reader video { transform: scaleX(-1) !important; }
         .table-responsive { overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; margin-top: 15px; }
         th, td { padding: 12px; text-align: left; border-bottom: 1px solid var(--border); }
