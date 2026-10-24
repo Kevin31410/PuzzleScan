@@ -12,6 +12,12 @@
         }
         body { font-family: Arial, sans-serif; background-color: var(--bg-main); color: var(--text-light); margin: 0; padding: 0; }
         nav { background-color: var(--bg-card); display: flex; align-items:center; overflow-x: auto; border-bottom: 2px solid var(--border); }
+        /* Bandeau d'accès discret : une seule ligne, sans hauteur superflue. */
+        #authPanel { display:flex; align-items:center; gap:8px; flex-wrap:wrap; padding:5px 10px; margin-bottom:8px; min-width:0; border-radius:6px; font-size:12px; }
+        #authPanel #authStatus { margin:0; flex:1; min-width:130px; font-size:12px; line-height:1.25; }
+        #authPanel button.btn { margin:0; padding:5px 9px; font-size:12px; white-space:nowrap; }
+        #authPanel.auth-connected { padding:3px 8px; opacity:.85; }
+        #authPanel.auth-connected #authStatus { font-size:11px; }
         .auth-indicator { margin-left:auto; flex-shrink:0; display:flex; align-items:center; padding:4px 12px; }
         .auth-indicator img { width:48px; height:48px; object-fit:contain; border:4px solid var(--danger); border-radius:50%; background:white; padding:3px; }
         .auth-indicator.connected img { border-color:var(--success); }
@@ -48,9 +54,8 @@
     </nav>
 
     <div class="container">
-      <div class="panel" style="margin-bottom:15px;flex:none" id="authPanel">
-        <strong>🔐 Accès à la ludothèque</strong>
-        <p id="authStatus">Non connecté — connectez-vous avec le compte Google de L’Arche à Puzzle.</p>
+      <div class="panel" id="authPanel">
+        <span aria-hidden="true">🔐</span><span id="authStatus">Non connecté</span>
         <button id="btn-login" class="btn btn-primary">Se connecter avec Google</button>
         <button id="btn-logout" class="btn" style="display:none">Se déconnecter</button>
       </div>
@@ -142,6 +147,7 @@
     function setAuthIndicator(connected, message) {
       const indicator=el('authIndicator');
       indicator.classList.toggle('connected',!!connected);
+      el('authPanel').classList.toggle('auth-connected',!!connected);
       indicator.title=message||(connected?'Connexion Google réussie':'Connexion Google non établie');
       indicator.setAttribute('aria-label',indicator.title);
     }
@@ -178,7 +184,7 @@
         sheetInfo=null;
         el('authStatus').textContent='Connecté à Google. Accès au tableur en cours de vérification…';
         await getSheetInfo();
-        el('authStatus').textContent='Connexion autorisée — vérifiez que vous utilisez le compte L’Arche à Puzzle.';
+        el('authStatus').textContent='Connecté à L’Arche à Puzzle';
         el('btn-login').style.display='none';el('btn-logout').style.display='inline-block';
         await loadPuzzlesFromDrive();
         setAuthIndicator(true,'Connecté : '+AUTHORIZED_EMAIL);
@@ -195,7 +201,7 @@
       accessToken='';sheetInfo=null;dbPuzzles=[];renderTables();
       setAuthIndicator(false,'Déconnecté');
       el('totalValue').textContent='Connexion requise';
-      el('authStatus').textContent='Non connecté — connectez-vous avec le compte L’Arche à Puzzle.';
+      el('authStatus').textContent='Non connecté';
       el('btn-login').style.display='inline-block';el('btn-logout').style.display='none';resetScanner();
     }
     el('btn-login').onclick=login;el('btn-logout').onclick=logout;
