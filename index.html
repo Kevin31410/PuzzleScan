@@ -60,6 +60,7 @@
                 <div class="panel">
                     <div class="status-badge" id="scanStatus">PRÊT À SCANNER</div>
                     <div id="resultCard" style="display: none;">
+                        <h3 id="formTitle">Saisie du puzzle</h3>
                         <img id="puzzleImage" class="cover-preview" src="" alt="Boîte" style="width: 150px; height: 150px; margin: 0 auto; display: block;">
                         <input type="hidden" id="puzzleBarcode">
                         <input type="hidden" id="puzzleImgUrl">
@@ -71,9 +72,18 @@
                         </div>
                         <label>Notes / État</label><textarea id="puzzleNotes" rows="2"></textarea>
                         <div style="display: flex; gap: 10px; margin-top: 15px;">
-                            <button id="btn-save" class="btn btn-success" style="flex: 1;">✅ SAUVEGARDER</button>
+                            <button id="btn-save" class="btn btn-success" style="flex: 1;">✅ ENREGISTRER LE PUZZLE</button>
                             <button id="btn-cancel" class="btn btn-danger" style="flex: 1;">❌ ANNULER</button>
                         </div>
+                    </div>
+                    <div id="loanCard" style="display:none;">
+                        <h3>Prêt du puzzle</h3>
+                        <p id="loanPuzzleDescription"></p>
+                        <p id="loanWarning" style="color:var(--warning);display:none;"></p>
+                        <label for="loanBorrower">Nom de l'emprunteur</label>
+                        <input id="loanBorrower" type="text" autocomplete="off" placeholder="Nom de l'emprunteur">
+                        <button id="btn-confirm-loan" class="btn btn-success">🤝 ENREGISTRER LE PRÊT</button>
+                        <button id="btn-cancel-loan" class="btn btn-danger">❌ ANNULER</button>
                     </div>
                 </div>
             </div>
@@ -107,13 +117,10 @@
 
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script>
-    const API_URL = "https://script.google.com/macros/s/AKfycbxgid9whakE54so6DbmRfHgmZOwT6m7fSKzOlvZVf3FHub90VsRpiRiP2_KPw4nl8Lt/exec";
-    let dbPuzzles = [], scanner = null, lastCode = '';
+    const API_URL = 'https://script.google.com/macros/s/AKfycbxgid9whakE54so6DbmRfHgmZOwT6m7fSKzOlvZVf3FHub90VsRpiRiP2_KPw4nl8Lt/exec'; // Conserver ici l'URL /exec du déploiement actuel
+    let dbPuzzles = [], scanner = null, lastCode = '', selectedLoanId = null, scanBusy = false;
     const el = id => document.getElementById(id);
-    function configured() {
-        return API_URL.startsWith("https://script.google.com/macros/s/")
-            && API_URL.endsWith("/exec");
-    }
+    function configured() { if(API_URL.includes('COLLER_ICI')) { alert('Configurer API_URL dans index.html avec votre URL Apps Script /exec.'); return false; } return true; }
     function apiGet(params={}) {
       return new Promise((resolve,reject)=>{
         if(!configured()) return reject(new Error('URL Apps Script manquante'));
@@ -166,7 +173,10 @@
     el('nav-lib').onclick=function(){switchTab('tab-lib',this)};
     el('nav-loans').onclick=function(){switchTab('tab-loans',this)};
     el('btn-search').onclick=searchAPI;
-    el('btn-create').onclick=()=>afficherResultat(el('manualSearch').value.trim(),{});
+    el('manualSearch').addEventListener('keydown', e=>{if(e.key==='Enter')searchAPI()});
+    el('btn-confirm-loan').onclick=confirmScannedLoan;
+    el('btn-cancel-loan').onclick=resetScanner;
+    el('btn-create').onclick=()=>showPuzzleEntry(el('manualSearch').value.trim());
     el('btn-save').onclick=savePuzzle;
     el('btn-cancel').onclick=resetScanner;
     el('btn-refresh-lib').onclick=loadPuzzlesFromDrive;
@@ -186,38 +196,78 @@
       if(!window.Html5QrcodeScanner){el('reader').textContent='Bibliothèque scanner indisponible.';return;}
       try {
         scanner=new Html5QrcodeScanner('reader',{fps:10,qrbox:{width:250,height:150},formatsToSupport:[Html5QrcodeSupportedFormats.EAN_13,Html5QrcodeSupportedFormats.EAN_8,Html5QrcodeSupportedFormats.UPC_A,Html5QrcodeSupportedFormats.UPC_E,Html5QrcodeSupportedFormats.CODE_128]},false);
-        scanner.render(code=>{if(code===lastCode)return;lastCode=code;el('manualSearch').value=code;scanner.pause(true);searchAPI();},()=>{});
+        scanner.render(code=>{if(scanBusy||code===lastCode)return;lastCode=code;el('manualSearch').value=code;try{scanner.pause(true)}catch(e){}searchAPI();},()=>{});
       }catch(e){el('reader').textContent='Caméra indisponible : '+e.message;}
     }
-    function resetScanner(){el('resultCard').style.display='none';el('manualSearch').value='';el('puzzleBarcode').value='';lastCode='';status('PRÊT À SCANNER');try{scanner?.resume()}catch(e){}}
-    async function searchAPI(){
-      const barcode=el('manualSearch').value.trim();if(!barcode){alert('Saisir ou scanner un code-barres.');return;}
-      const existing=dbPuzzles.find(p=>String(p.barcode)===barcode);
-      if(existing){status('DÉJÀ DANS LA LUDOTHÈQUE','success');afficherResultat(barcode,existing,true);return;}
-      status('RECHERCHE EN COURS...');
-      try {
-        const res=await apiGet({barcode});
-        if(!res.ok)throw new Error(res.error);
-        if(res.status===429)throw new Error('Limite de recherche atteinte');
-        if(!res.data?.items?.length)throw new Error('Code inconnu. Cliquez sur Créer pour saisir le puzzle.');
-        afficherResultat(barcode,res.data.items[0]);status('PUZZLE TROUVÉ','success');
-      }catch(e){status('RECHERCHE : '+e.message,'danger');}
+    function resetScanner(){
+      el('resultCard').style.display='none';el('loanCard').style.display='none';
+      el('manualSearch').value='';el('puzzleBarcode').value='';el('loanBorrower').value='';
+      selectedLoanId=null;lastCode='';scanBusy=false;status('PRÊT À SCANNER');
+      try{scanner?.resume()}catch(e){}
     }
-    function afficherResultat(barcode,item,existing=false){
-      el('resultCard').style.display='block';
+    async function searchAPI(){
+      const barcode=el('manualSearch').value.trim();
+      if(!barcode){alert('Saisir ou scanner un code-barres.');return;}
+      if(scanBusy)return;
+      scanBusy=true;
+      el('resultCard').style.display='none';el('loanCard').style.display='none';
+      status('RECHERCHE DANS LA LUDOTHÈQUE...');
+      try{
+        // Relire Google Sheets avant de décider : évite une décision sur des données périmées.
+        const res=await apiGet();
+        if(!res.ok)throw new Error(res.error||'Lecture impossible');
+        dbPuzzles=Array.isArray(res.puzzles)?res.puzzles:[];
+        renderTables();el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';
+        const found=dbPuzzles.find(p=>String(p.barcode).trim()===barcode);
+        if(found)showLoanForm(found);
+        else showPuzzleEntry(barcode);
+      }catch(e){
+        status('ERREUR DE CONNEXION : '+e.message,'danger');
+        alert('Impossible de vérifier la base de données. Aucun nouveau puzzle ne sera créé.');
+        scanBusy=false;lastCode='';try{scanner?.resume()}catch(err){}
+      }
+    }
+    function showPuzzleEntry(barcode){
+      scanBusy=false;selectedLoanId=null;
+      el('loanCard').style.display='none';el('resultCard').style.display='block';
+      el('formTitle').textContent='Saisie du puzzle';
       el('puzzleBarcode').value=barcode;
-      el('puzzleBrand').value=item.brand||'';
-      el('puzzleTitle').value=item.title||'';
-      el('puzzlePieces').value=item.pieces||'';
-      el('puzzlePrice').value=item.price||(item.offers?.[0] ? item.offers[0].price+' '+(item.offers[0].currency||'') : '');
-      el('puzzleNotes').value=item.notes||'';
-      const image=item.imgUrl||item.images?.[0]||'';
-      el('puzzleImgUrl').value=image;el('puzzleImage').src=image||'';
-      el('btn-save').disabled=existing;
-      if(!existing)status('SAISIE DU PUZZLE');
+      for(const id of ['puzzleBrand','puzzleTitle','puzzlePieces','puzzlePrice','puzzleNotes','puzzleImgUrl'])el(id).value='';
+      el('puzzleImage').removeAttribute('src');el('puzzleImage').style.display='none';
+      el('btn-save').disabled=false;
+      status('NOUVEAU PUZZLE : COMPLÉTEZ SA FICHE');
+      el('puzzleTitle').focus();
+    }
+    function showLoanForm(p){
+      scanBusy=false;selectedLoanId=String(p.id);
+      el('resultCard').style.display='none';el('loanCard').style.display='block';
+      el('loanPuzzleDescription').textContent=[p.brand,p.title,p.pieces?`${p.pieces} pièces`:null].filter(Boolean).join(' — ');
+      el('loanBorrower').value='';
+      const loaned=!!String(p.emprunteur||'').trim();
+      el('loanWarning').style.display=loaned?'block':'none';
+      el('loanWarning').textContent=loaned?'Déjà prêté à : '+p.emprunteur+'. Effectuez le retour avant un nouveau prêt.':'';
+      el('loanBorrower').disabled=loaned;el('btn-confirm-loan').disabled=loaned;
+      status(loaned?'PUZZLE DÉJÀ PRÊTÉ':'PUZZLE TROUVÉ : SAISIR L’EMPRUNTEUR',loaned?'warning':'success');
+      if(!loaned)el('loanBorrower').focus();
+    }
+    async function confirmScannedLoan(){
+      const name=el('loanBorrower').value.trim();
+      if(!name){alert('Saisissez le nom de l’emprunteur.');return;}
+      const id=selectedLoanId;if(!id)return;
+      const button=el('btn-confirm-loan');button.disabled=true;
+      try{
+        const res=await apiGet();if(!res.ok)throw new Error(res.error||'Lecture impossible');
+        const current=(res.puzzles||[]).find(p=>String(p.id)===id);
+        if(!current)throw new Error('Puzzle introuvable dans Google Sheets.');
+        if(current.emprunteur)throw new Error('Ce puzzle est déjà prêté à '+current.emprunteur);
+        const p={...current,emprunteur:name,datePret:new Date().toLocaleDateString('fr-FR')};
+        await writeAndVerify('save',{puzzle:p},rows=>rows.some(x=>String(x.id)===id&&x.emprunteur===name));
+        alert('Prêt enregistré !');resetScanner();
+      }catch(e){alert(e.message);button.disabled=false;}
     }
     async function savePuzzle(){
       const p={id:String(Date.now()),barcode:el('puzzleBarcode').value,brand:el('puzzleBrand').value.trim(),title:el('puzzleTitle').value.trim(),pieces:el('puzzlePieces').value.trim(),price:el('puzzlePrice').value.trim(),notes:el('puzzleNotes').value.trim(),imgUrl:el('puzzleImgUrl').value,emprunteur:'',datePret:''};
+      if(!p.barcode){alert('Le code-barres est obligatoire.');return;}
       if(!p.title){alert('Le titre est obligatoire.');return;}
       if(p.barcode&&dbPuzzles.some(x=>String(x.barcode)===p.barcode)){alert('Ce code-barres existe déjà.');return;}
       el('btn-save').disabled=true;
