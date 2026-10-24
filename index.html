@@ -44,6 +44,12 @@
     </nav>
 
     <div class="container">
+      <div class="panel" style="margin-bottom:15px;flex:none" id="authPanel">
+        <strong>🔐 Accès à la ludothèque</strong>
+        <p id="authStatus">Non connecté — connectez-vous avec le compte Google de L’Arche à Puzzle.</p>
+        <button id="btn-login" class="btn btn-primary">Se connecter avec Google</button>
+        <button id="btn-logout" class="btn" style="display:none">Se déconnecter</button>
+      </div>
         <div id="tab-scan" class="tab-content active">
             <h1 style="text-align: center; color: var(--primary);">🧩 PuzzleScan</h1>
             <div style="display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap;">
@@ -115,53 +121,145 @@
         </div>
     </div>
 
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <script>
-    const API_URL = 'https://script.google.com/macros/s/AKfycbxgid9whakE54so6DbmRfHgmZOwT6m7fSKzOlvZVf3FHub90VsRpiRiP2_KPw4nl8Lt/exec'; // Conserver ici l'URL /exec du déploiement actuel
+    const CLIENT_ID = '217933478210-oh2fgfg7h9uvf6ahvchofgfrgcov2la6.apps.googleusercontent.com';
+    const SPREADSHEET_ID = '17LCrnzVYRrK5YbKU4U7D01PkLmhJ_uNlsSPXcSB_JbY';
+    const AUTHORIZED_EMAIL = 'larcheapuzzle@gmail.com';
+    const SCOPE = 'openid email https://www.googleapis.com/auth/spreadsheets';
+    const FIELDS = ['id','barcode','brand','title','pieces','price','notes','imgUrl','emprunteur','datePret'];
     let dbPuzzles = [], scanner = null, lastCode = '', selectedLoanId = null, scanBusy = false;
+    let tokenClient = null, accessToken = '', sheetInfo = null;
     const el = id => document.getElementById(id);
-    function configured() { if(API_URL.includes('COLLER_ICI')) { alert('Configurer API_URL dans index.html avec votre URL Apps Script /exec.'); return false; } return true; }
-    function apiGet(params={}) {
+
+    function waitForGoogle() {
       return new Promise((resolve,reject)=>{
-        if(!configured()) return reject(new Error('URL Apps Script manquante'));
-        const cb='puzzlescan_cb_'+Date.now()+'_'+Math.floor(Math.random()*1e6);
-        const script=document.createElement('script');
-        let done=false;
-        const finish=(err,data)=>{ if(done)return; done=true; clearTimeout(timer); delete window[cb]; script.remove(); err?reject(err):resolve(data); };
-        window[cb]=data=>finish(null,data);
-        const timer=setTimeout(()=>finish(new Error('Délai de connexion dépassé')),20000);
-        script.onerror=()=>finish(new Error('Impossible de contacter Apps Script. Vérifier le déploiement et ses autorisations.'));
-        const url=new URL(API_URL);
-        Object.entries({...params,callback:cb,_:Date.now()}).forEach(([k,v])=>url.searchParams.set(k,v));
-        script.src=url.toString(); document.head.appendChild(script);
+        let n=0; const timer=setInterval(()=>{
+          if(window.google?.accounts?.oauth2){clearInterval(timer);resolve();}
+          else if(++n>100){clearInterval(timer);reject(new Error('Bibliothèque de connexion Google indisponible.'));}
+        },100);
       });
     }
-    async function apiWrite(action, data) {
-      if(!configured()) throw new Error('URL Apps Script manquante');
-      // Envoi simple : Apps Script n'autorise pas les réponses CORS depuis une page externe.
-      await fetch(API_URL,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action,...data})});
-    }
-    const sleep = ms=>new Promise(r=>setTimeout(r,ms));
-    async function loadPuzzlesFromDrive() {
-      el('totalValue').textContent='Chargement...';
+    async function login() {
       try {
-        const res=await apiGet(); if(!res.ok) throw new Error(res.error||'Erreur de lecture');
-        dbPuzzles=Array.isArray(res.puzzles)?res.puzzles:[];
-        renderTables(); el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';
-      } catch(e) { el('totalValue').textContent='Erreur de chargement'; alert(e.message); }
+        await waitForGoogle();
+        if(!tokenClient) tokenClient=google.accounts.oauth2.initTokenClient({
+          client_id:CLIENT_ID, scope:SCOPE,
+          callback:()=>{}
+        });
+        const result=await new Promise((resolve,reject)=>{
+          tokenClient.callback=response=>response.error?reject(new Error(response.error)):resolve(response);
+          tokenClient.requestAccessToken({prompt:'select_account'});
+        });
+        accessToken=result.access_token;
+        const profileResponse=await fetch('https://openidconnect.googleapis.com/v1/userinfo',{
+          headers:{Authorization:'Bearer '+accessToken}
+        });
+        if(!profileResponse.ok)throw new Error('Impossible de vérifier le compte Google.');
+        const profile=await profileResponse.json();
+        if(profile.email_verified!==true||String(profile.email||'').toLowerCase()!==AUTHORIZED_EMAIL){
+          logout();throw new Error('Accès réservé au compte '+AUTHORIZED_EMAIL);
+        }
+        // Le contrôle d'accès aux données est appliqué par Google Sheets :
+        // seuls les comptes ayant accès au tableur peuvent lire et écrire.
+        sheetInfo=null;
+        el('authStatus').textContent='Connecté à Google. Accès au tableur en cours de vérification…';
+        await getSheetInfo();
+        el('authStatus').textContent='Connexion autorisée — vérifiez que vous utilisez le compte L’Arche à Puzzle.';
+        el('btn-login').style.display='none';el('btn-logout').style.display='inline-block';
+        await loadPuzzlesFromDrive();
+      }catch(e){accessToken='';el('authStatus').textContent='Connexion impossible : '+e.message;alert(e.message);}
     }
-    async function writeAndVerify(action, data, predicate) {
-      el('totalValue').textContent='Enregistrement...';
-      await apiWrite(action,data);
-      for(let attempt=0;attempt<5;attempt++) {
-        await sleep(1200);
-        const res=await apiGet();
-        if(!res.ok) throw new Error(res.error||'Erreur de relecture');
-        if(predicate(res.puzzles||[])) {
-          dbPuzzles=res.puzzles; renderTables(); el('totalValue').textContent=dbPuzzles.length+' puzzle(s)'; return;
+    function logout(){
+      if(accessToken&&window.google?.accounts?.oauth2) google.accounts.oauth2.revoke(accessToken,()=>{});
+      accessToken='';sheetInfo=null;dbPuzzles=[];renderTables();
+      el('totalValue').textContent='Connexion requise';
+      el('authStatus').textContent='Non connecté — connectez-vous avec le compte L’Arche à Puzzle.';
+      el('btn-login').style.display='inline-block';el('btn-logout').style.display='none';resetScanner();
+    }
+    el('btn-login').onclick=login;el('btn-logout').onclick=logout;
+    async function sheetsRequest(path,options={}) {
+      if(!accessToken)throw new Error('Connectez-vous avec Google avant de continuer.');
+      const res=await fetch('https://sheets.googleapis.com/v4/spreadsheets/'+encodeURIComponent(SPREADSHEET_ID)+path,{
+        ...options,headers:{'Authorization':'Bearer '+accessToken,...(options.body?{'Content-Type':'application/json'}:{}),...(options.headers||{})}
+      });
+      const body=await res.json().catch(()=>({}));
+      if(!res.ok){
+        if(res.status===401){accessToken='';el('btn-login').style.display='inline-block';el('btn-logout').style.display='none';}
+        throw new Error(body.error?.message||('Erreur Google Sheets HTTP '+res.status));
+      }
+      return body;
+    }
+    async function getSheetInfo(){
+      if(sheetInfo)return sheetInfo;
+      const meta=await sheetsRequest('?fields=sheets(properties(sheetId,title,index))');
+      for(const entry of (meta.sheets||[])){
+        const title=entry.properties.title;
+        const range=encodeURIComponent("'"+title.replace(/'/g,"''")+"'!A1:J1");
+        const first=await sheetsRequest('/values/'+range);
+        if(String(first.values?.[0]?.[0]||'').trim()==='ID'){
+          sheetInfo={title,id:entry.properties.sheetId};return sheetInfo;
         }
       }
-      throw new Error('Enregistrement non confirmé. Vérifiez les données dans Google Sheets avant de recommencer.');
+      throw new Error('Aucun onglet avec ID en cellule A1. Vérifiez le tableur Ludotheque_DB.');
+    }
+    function sheetRange(a1){return encodeURIComponent("'"+sheetInfo.title.replace(/'/g,"''")+"'!"+a1);}
+    async function apiGet(){
+      await getSheetInfo();
+      const response=await sheetsRequest('/values/'+sheetRange('A2:J')+'?valueRenderOption=FORMATTED_VALUE');
+      const puzzles=(response.values||[]).filter(r=>String(r[0]||'').trim()).map(r=>
+        Object.fromEntries(FIELDS.map((field,i)=>[field,String(r[i]??'')])));
+      return {ok:true,puzzles};
+    }
+    async function apiWrite(action,data){
+      await getSheetInfo();
+      const latest=await apiGet();
+      const index=latest.puzzles.findIndex(p=>String(p.id)===String(data.puzzle?.id||data.id));
+      if(action==='save'){
+        const p=data.puzzle||{};
+        if(!p.id||!p.title||!p.barcode)throw new Error('ID, code-barres et titre obligatoires.');
+        if(index<0&&latest.puzzles.some(x=>x.barcode===String(p.barcode)))throw new Error('Ce code-barres existe déjà.');
+        const values=[FIELDS.map(field=>String(p[field]??''))];
+        if(index>=0){
+          const row=index+2;
+          await sheetsRequest('/values/'+sheetRange('A'+row+':J'+row)+'?valueInputOption=RAW',{
+            method:'PUT',body:JSON.stringify({range:"'"+sheetInfo.title+"'!A"+row+':J'+row,majorDimension:'ROWS',values})
+          });
+        }else{
+          await sheetsRequest('/values/'+sheetRange('A:J')+':append?valueInputOption=RAW&insertDataOption=INSERT_ROWS',{
+            method:'POST',body:JSON.stringify({values,majorDimension:'ROWS'})
+          });
+        }
+      }else if(action==='delete'){
+        if(index<0)throw new Error('Puzzle introuvable.');
+        const rowIndex=index+1;
+        await sheetsRequest(':batchUpdate',{
+          method:'POST',body:JSON.stringify({requests:[{deleteDimension:{range:{sheetId:sheetInfo.id,dimension:'ROWS',startIndex:rowIndex,endIndex:rowIndex+1}}}]})
+        });
+      }else throw new Error('Action inconnue.');
+    }
+    const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+    async function loadPuzzlesFromDrive(){
+      if(!accessToken){el('totalValue').textContent='Connexion requise';return;}
+      el('totalValue').textContent='Chargement...';
+      try{
+        const res=await apiGet();dbPuzzles=res.puzzles;renderTables();
+        el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';
+      }catch(e){el('totalValue').textContent='Erreur de chargement';alert(e.message);}
+    }
+    async function writeAndVerify(action,data,predicate){
+      el('totalValue').textContent='Enregistrement...';
+      await apiWrite(action,data);
+      for(let attempt=0;attempt<3;attempt++){
+        const res=await apiGet();
+        if(predicate(res.puzzles)){
+          dbPuzzles=res.puzzles;renderTables();
+          el('totalValue').textContent=dbPuzzles.length+' puzzle(s)';return;
+        }
+        await sleep(500);
+      }
+      throw new Error('Enregistrement non confirmé. Vérifiez Google Sheets avant de recommencer.');
     }
     function switchTab(tabId,button) {
       document.querySelectorAll('.tab-content').forEach(x=>x.classList.remove('active'));
